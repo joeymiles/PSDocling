@@ -88,3 +88,7 @@ pids
 
 # Node modules (if any frontend dependencies)
 node_modules/
+
+# Other
+.claude
+CLAUDE.md

@@ -199,5 +199,4 @@ Copyright (c) 2025 Joey A Miles. All rights reserved.
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/joeymiles/PSDocling/issues)
-- **Documentation**: See `CLAUDE.md` for detailed developer notes
 - **Examples**: Check `HowTo.ps1` for usage examples

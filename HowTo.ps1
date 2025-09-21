@@ -1,5 +1,5 @@
 # PSDocling - PowerShell Document Processing System
-# Comprehensive Usage Examples and How-To Guide
+# Usage Examples and How-To Guide
 
 #region Installation Examples
 

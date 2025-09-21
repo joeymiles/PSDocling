@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell:*)",
+      "WebSearch",
+      "Bash(curl:*)",
+      "Bash(dir)",
+      "Bash(Get-Content \"C:\\Users\\Jaga\\Documents\\Scripts\\GitHub\\Docling4\\DoclingSystem.psm1\")",
+      "Bash(Select-String \"Export-ModuleMember\")",
+      "Bash(Select-Object -First 5)",
+      "Bash(dir:*)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

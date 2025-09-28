@@ -1,0 +1,87 @@
+# Claude Code specific files
+.claude/
+CLAUDE.md
+
+# Processed documents (test outputs)
+ProcessedDocuments/
+
+# Temporary files
+*.tmp
+*.temp
+
+# PowerShell specific
+*.ps1xml
+*.ps1xml.bak
+*Publish-PSDocling.ps1
+
+# Python cache (if Python scripts are added later)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows specific
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux specific
+*~
+
+# Log files
+*.log
+*.log.*
+
+# Backup files
+*.bak
+*.backup
+
+# Test results
+TestResults/
+coverage/
+
+# Package files
+*.nupkg
+*.zip
+
+# Temporary PowerShell module files
+PSGetModuleInfo.xml
+
+# User-specific files
+*.user
+config.local.*
+settings.local.*
+
+# Screenshots and captures
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+Capture.*
+Screenshot.*
+
+# Documentation build artifacts
+docs/_build/
+docs/build/
+
+# Temporary processing files
+figureexport.txt

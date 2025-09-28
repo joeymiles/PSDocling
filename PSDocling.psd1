@@ -1,7 +1,7 @@
 @{
     # Module manifest for PSDocling
     RootModule = 'PSDocling.psm1'
-    ModuleVersion = '2.1.2'
+    ModuleVersion = '2.1.9'
 
     # Unique identifier for this module
     GUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
@@ -39,7 +39,10 @@
         'Get-NextQueueItem',
         'Get-ProcessingStatus',
         'Set-ProcessingStatus',
-        'Update-ItemStatus'
+        'Update-ItemStatus',
+        'Clear-PSDoclingSystem',
+        'Invoke-DoclingHybridChunking',
+        'Test-EnhancedChunking'
     )
 
     # Cmdlets to export from this module
@@ -68,23 +71,6 @@
 
             # Release notes for this version
             ReleaseNotes = @"
-Version 2.1.2:
-- Fixed DocTags XML parsing errors with proper XML structure wrapping
-- Improved Processed Files section to only show generated files
-- Added re-process functionality for generated output files
-- Immediate page refresh after document processing completion
-- Enhanced user experience with better file filtering
-
-Version 2.1.1:
-- Queue-based document processing architecture
-- Multi-process system (API server, processor, web frontend)
-- Support for PDF, DOCX, PPTX, XLSX, HTML, MD, and image formats
-- REST API with comprehensive error handling
-- Web frontend with drag-drop file upload
-- Python Docling library integration
-- Cross-platform PowerShell Core support
-- Comprehensive Comment-Based Help documentation
-
 DEPENDENCIES:
 - Python 3.8+ (required for document processing)
 - docling Python package (auto-installed if missing)

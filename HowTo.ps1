@@ -106,6 +106,46 @@ Get-DoclingSystemStatus
 
 #endregion
 
+#region Advanced Chunking Examples
+
+Write-Host "`n=== ADVANCED CHUNKING FEATURES ===" -ForegroundColor Cyan
+
+Write-Host "`n1. Hybrid Chunking for Document Processing:" -ForegroundColor Yellow
+Write-Host @"
+# Process a document with hybrid chunking
+`$result = Invoke-DoclingHybridChunking -FilePath "C:\Documents\large-document.pdf" -OutputFormat "markdown"
+Write-Host "Processing completed with `$(`$result.chunks.Count) chunks"
+Write-Host "Output saved to: `$(`$result.outputFile)"
+
+# Process with custom chunk sizes
+`$result = Invoke-DoclingHybridChunking -FilePath "C:\Documents\report.docx" `
+    -MaxChunkSize 1500 `
+    -MinChunkSize 300 `
+    -OutputFormat "json"
+
+# Process with all enrichment options enabled
+`$result = Invoke-DoclingHybridChunking -FilePath "C:\Documents\technical.pdf" `
+    -EnableCodeEnrichment `
+    -EnableFormulaEnrichment `
+    -EnablePictureClassification `
+    -EnablePictureDescription `
+    -OutputFormat "doctags"
+"@
+
+Write-Host "`n2. Testing Enhanced Chunking:" -ForegroundColor Yellow
+Write-Host @"
+# Test the chunking system with sample documents
+Test-EnhancedChunking
+
+# This will:
+# - Generate test documents (PDF, DOCX, Excel, PowerPoint)
+# - Process them with different chunk configurations
+# - Display performance metrics and results
+# - Clean up test files automatically
+"@
+
+#endregion
+
 #region REST API Examples
 
 Write-Host "`n=== REST API USAGE EXAMPLES ===" -ForegroundColor Cyan

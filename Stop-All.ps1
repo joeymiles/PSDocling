@@ -57,4 +57,6 @@ $tempFiles | ForEach-Object {
     }
 }
 
+Clear-PSDoclingSystem -force $true
+
 Write-Ok "Docling System stopped."

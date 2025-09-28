@@ -11,6 +11,8 @@ A PowerShell-based document processing system that converts various document for
 - **Web Frontend**: Drag-drop file upload interface with real-time status updates
 - **Smart File Management**: Processed Files section shows only generated files with re-process functionality
 - **Immediate Updates**: Instant page refresh after document processing completion
+- **Advanced Chunking**: Hybrid chunking with semantic and structure-aware document splitting
+- **Enrichment Options**: Code understanding, formula detection, picture classification and description
 - **Cross-Platform**: Works on Windows PowerShell and PowerShell Core (Linux/macOS)
 - **Python Integration**: Leverages the powerful Docling library for document conversion
 
@@ -77,6 +79,12 @@ Get-DoclingSystemStatus
 
 # Check Python/Docling availability
 Get-PythonStatus
+
+# Process with advanced chunking
+Invoke-DoclingHybridChunking -FilePath "C:\Documents\report.pdf" -OutputFormat "markdown"
+
+# Test chunking system
+Test-EnhancedChunking
 ```
 
 ### Web Interface
@@ -147,17 +155,56 @@ Invoke-RestMethod -Uri "http://localhost:8080/queue"
 - `Start-DoclingSystem` - Launch all services
 - `Add-DocumentToQueue` - Queue documents for processing
 - `Get-DoclingSystemStatus` - System status and statistics
+- `Get-PythonStatus` - Check Python and Docling availability
 
 ### Queue Management
 - `Get-QueueItems` - Retrieve all queue items
 - `Add-QueueItem` - Add item to queue
 - `Get-NextQueueItem` - Get next item for processing
+- `Get-ProcessingStatus` - Get processing status
+- `Set-ProcessingStatus` - Set processing status
 - `Update-ItemStatus` - Update processing status
+- `Clear-PSDoclingSystem` - Clear all queued items and processing status
 
 ### Services
 - `Start-APIServer` - Launch REST API server
 - `Start-DocumentProcessor` - Launch background processor
 - `New-FrontendFiles` - Generate web frontend
+
+### Advanced Processing
+- `Invoke-DoclingHybridChunking` - Process documents with hybrid chunking
+- `Test-EnhancedChunking` - Test the chunking system with sample documents
+
+## Advanced Chunking
+
+The PSDocling module includes advanced document chunking capabilities for better document processing and analysis:
+
+### Hybrid Chunking
+
+```powershell
+# Basic chunking with default settings
+$result = Invoke-DoclingHybridChunking -FilePath "document.pdf"
+
+# Custom chunk sizes
+$result = Invoke-DoclingHybridChunking -FilePath "report.docx" `
+    -MaxChunkSize 1500 `
+    -MinChunkSize 300 `
+    -OutputFormat "json"
+
+# Enable all enrichment options
+$result = Invoke-DoclingHybridChunking -FilePath "technical.pdf" `
+    -EnableCodeEnrichment `
+    -EnableFormulaEnrichment `
+    -EnablePictureClassification `
+    -EnablePictureDescription
+```
+
+### Features
+- **Semantic Chunking**: Preserves document structure and meaning
+- **Structure-Aware**: Respects headers, sections, and paragraphs
+- **Table Handling**: Keeps tables intact as single chunks
+- **Code Block Preservation**: Maintains code blocks as complete units
+- **Smart Overlap**: Configurable overlap for context preservation
 
 ## Development
 

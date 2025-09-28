@@ -5,10 +5,12 @@ A PowerShell-based document processing system that converts various document for
 ## Features
 
 - **Multi-Format Support**: PDF, DOCX, XLSX, PPTX, MD, HTML, XHTML, CSV, and images (PNG, JPEG, TIFF, BMP, WEBP)
-- **Multiple Output Formats**: Markdown, JSON, HTML, Doctags
+- **Multiple Output Formats**: Markdown, JSON, HTML, DocTags (with proper XML structure)
 - **Queue-Based Processing**: Reliable document processing with status tracking
 - **REST API**: HTTP endpoints for programmatic access
 - **Web Frontend**: Drag-drop file upload interface with real-time status updates
+- **Smart File Management**: Processed Files section shows only generated files with re-process functionality
+- **Immediate Updates**: Instant page refresh after document processing completion
 - **Cross-Platform**: Works on Windows PowerShell and PowerShell Core (Linux/macOS)
 - **Python Integration**: Leverages the powerful Docling library for document conversion
 
@@ -76,7 +78,14 @@ Access the web frontend at `http://localhost:8081` to:
 - Upload documents via drag-drop
 - Monitor processing status in real-time
 - Download converted documents
+- Re-process documents with different format options
 - View detailed error reports
+
+**Recent Improvements:**
+- Processed Files section now shows only generated output files (not original uploads)
+- Each generated file includes a "Re-process" button for format conversion
+- Immediate page refresh after document processing completes
+- Fixed DocTags XML parsing errors with proper XML structure
 
 ### REST API
 
@@ -183,6 +192,16 @@ python -m pip install docling
 # Run as Administrator for URL ACL setup
 .\Start-All.ps1 -EnsureUrlAcl
 ```
+
+**DocTags XML parsing errors**:
+- DocTags output is now automatically wrapped in proper XML structure
+- Generated XML files are valid and can be viewed in browsers
+- If you encounter parsing issues, try re-processing the document
+
+**Processed Files not showing**:
+- Only generated files (.md, .xml, .html, .json) appear in Processed Files
+- Original uploaded files are not listed (by design)
+- Use the "Re-process" button on generated files to convert to different formats
 
 ## Contributing
 

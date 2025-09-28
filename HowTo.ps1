@@ -195,6 +195,71 @@ foreach (`$file in `$processedFiles) {
 
 #endregion
 
+#region Web Interface Features
+
+Write-Host "`n=== WEB INTERFACE FEATURES ===" -ForegroundColor Cyan
+
+Write-Host "`n1. Web Interface Usage:" -ForegroundColor Yellow
+Write-Host @"
+# Access the web interface (after starting system)
+# http://localhost:8081
+
+Features available in web interface:
+- Drag-and-drop file upload for multiple file types
+- Real-time processing status with progress indicators
+- Download converted documents immediately
+- Re-process documents with different format options
+- Smart file management (shows only generated files)
+
+Supported input formats:
+- PDF, DOCX, XLSX, PPTX, HTML, MD, CSV
+- Images: PNG, JPEG, TIFF, BMP, WEBP
+
+Output format options:
+- Markdown (.md) - Clean, readable text format
+- JSON (.json) - Structured data representation
+- HTML (.html) - Web-ready format
+- DocTags (.xml) - Properly structured XML format
+"@
+
+Write-Host "`n2. Recent Web Interface Improvements:" -ForegroundColor Yellow
+Write-Host @"
+Version 2.1.2 improvements:
+- Processed Files section now shows only generated output files
+- Original uploaded files are no longer listed (cleaner interface)
+- Each generated file has a 'Re-process' button for format conversion
+- Immediate page refresh after document processing completes
+- Fixed DocTags XML parsing errors with proper structure wrapping
+
+Web interface workflow:
+1. Upload document(s) via drag-drop or file selection
+2. Select desired output format and enrichment options
+3. Monitor real-time processing progress
+4. Download completed files or use 'Re-process' for format changes
+5. Page automatically refreshes to show latest results
+"@
+
+Write-Host "`n3. DocTags Format Improvements:" -ForegroundColor Yellow
+Write-Host @"
+DocTags XML format fixes:
+- Generated XML files are now properly structured and valid
+- No more XML parsing errors when viewing in browsers
+- Automatic wrapping in proper XML document structure
+- Enhanced metadata includes generation timestamp and source info
+
+Example DocTags structure:
+<?xml version="1.0" encoding="UTF-8"?>
+<document>
+    <metadata>
+        <source>Docling DocTags Export</source>
+        <generated>2025-09-27T23:05:29</generated>
+    </metadata>
+    <doctags><![CDATA[...content...]]></doctags>
+</document>
+"@
+
+#endregion
+
 #region Monitoring and Troubleshooting
 
 Write-Host "`n=== MONITORING AND TROUBLESHOOTING ===" -ForegroundColor Cyan

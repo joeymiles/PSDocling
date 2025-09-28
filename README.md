@@ -104,9 +104,6 @@ Access the web frontend at `http://localhost:8081` to:
 **Processing Options and Enrichment Settings:**
 ![Processing Options](ProcessingOptions.JPG)
 
-**Document Upload and Queue Management:**
-![Document Upload Interface](uploaded_file.JPG)
-
 **Recent Improvements:**
 - Processed Files section now shows only generated output files (not original uploads)
 - Each generated file includes a "Re-process" button for format conversion

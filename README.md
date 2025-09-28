@@ -23,6 +23,13 @@ The system uses a multi-process architecture:
 - **Web Frontend**: Single-page application for file upload and management
 - **Queue Management**: JSON-based persistence for cross-process communication
 
+## Requirements
+
+- **PowerShell**: 5.1+ or PowerShell Core 6+
+- **Python**: 3.8+ (optional for simulation mode)
+- **Docling**: `pip install docling` (auto-installed if missing)
+- **.NET**: 4.7.2+ (Windows PowerShell)
+
 ## Installation
 
 ### Quick Install
@@ -171,13 +178,6 @@ Import-Module .\PSDocling.psm1 -Force
 Initialize-DoclingSystem -GenerateFrontend
 $status = Get-DoclingSystemStatus
 ```
-
-## Requirements
-
-- **PowerShell**: 5.1+ or PowerShell Core 6+
-- **Python**: 3.8+ (optional for simulation mode)
-- **Docling**: `pip install docling` (auto-installed if missing)
-- **.NET**: 4.7.2+ (Windows PowerShell)
 
 ## Troubleshooting
 

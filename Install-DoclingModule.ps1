@@ -48,13 +48,29 @@ if ($Scope -eq 'AllUsers' -and -not (Test-IsAdmin)) {
 $sourceDir = $PSScriptRoot
 $moduleName = 'PSDocling'
 
-# Verify required files exist
+# Check if Build directory exists with built module
+$buildDir = Join-Path $sourceDir 'Build'
+$builtModule = Join-Path $buildDir 'PSDocling.psm1'
+$usingBuildDir = Test-Path $builtModule
+
+# Verify required files exist (check Build folder first, then root)
 $requiredFiles = @('PSDocling.psm1', 'PSDocling.psd1')
 foreach ($file in $requiredFiles) {
-    $filePath = Join-Path $sourceDir $file
-    if (-not (Test-Path $filePath)) {
-        Write-Err "Required file not found: $file"
-        exit 1
+    $buildFilePath = Join-Path $buildDir $file
+    $rootFilePath = Join-Path $sourceDir $file
+
+    if ($usingBuildDir) {
+        if (-not (Test-Path $buildFilePath)) {
+            Write-Err "Required file not found in Build folder: $file"
+            Write-Info "Run .\Build-PSDoclingModule.ps1 first to create the built module"
+            exit 1
+        }
+    } else {
+        if (-not (Test-Path $rootFilePath)) {
+            Write-Err "Required file not found: $file"
+            Write-Info "Run .\Build-PSDoclingModule.ps1 to build the module first"
+            exit 1
+        }
     }
 }
 
@@ -97,25 +113,79 @@ if (Test-Path $destDir) {
 Write-Info "Creating module directory..."
 New-Item -Path $destDir -ItemType Directory -Force | Out-Null
 
-# Copy module files
-Write-Info "Copying module files..."
-$filesToCopy = @(
-    'PSDocling.psm1',
-    'PSDocling.psd1',
-    'Start-All.ps1',
-    'Stop-All.ps1',
-    'HowTo.ps1',
-    'CLAUDE.md'
-)
+# Use Build directory if available
+if ($usingBuildDir) {
+    Write-Info "Using built module from Build directory..."
 
-foreach ($file in $filesToCopy) {
-    $sourcePath = Join-Path $sourceDir $file
-    if (Test-Path $sourcePath) {
-        $destPath = Join-Path $destDir $file
-        Copy-Item $sourcePath $destPath -Force
-        Write-Info "Copied: $file"
+    # Copy files from Build directory
+    $filesToCopy = @(
+        'PSDocling.psm1',
+        'PSDocling.psd1',
+        'PSDocling.config.psd1'
+    )
+
+    foreach ($file in $filesToCopy) {
+        $sourcePath = Join-Path $buildDir $file
+        if (Test-Path $sourcePath) {
+            $destPath = Join-Path $destDir $file
+            Copy-Item $sourcePath $destPath -Force
+            Write-Info "Copied: $file (from Build)"
+        }
+    }
+
+    # Copy additional files from root
+    $additionalFiles = @(
+        'Start-All.ps1',
+        'Stop-All.ps1',
+        'HowTo.ps1',
+        'README.md',
+        'LICENSE'
+    )
+
+    foreach ($file in $additionalFiles) {
+        $sourcePath = Join-Path $sourceDir $file
+        if (Test-Path $sourcePath) {
+            $destPath = Join-Path $destDir $file
+            Copy-Item $sourcePath $destPath -Force
+            Write-Info "Copied: $file"
+        }
+    }
+} else {
+    Write-Warn "No built module found in Build directory. Run .\Build-PSDoclingModule.ps1 first!"
+
+    # Fall back to copying source files
+    Write-Info "Falling back to source structure..."
+    $filesToCopy = @(
+        'PSDocling.psm1',
+        'PSDocling.psd1',
+        'PSDocling.config.psd1',
+        'Start-All.ps1',
+        'Stop-All.ps1',
+        'HowTo.ps1',
+        'CLAUDE.md'
+    )
+
+    foreach ($file in $filesToCopy) {
+        $sourcePath = Join-Path $sourceDir $file
+        if (Test-Path $sourcePath) {
+            $destPath = Join-Path $destDir $file
+            Copy-Item $sourcePath $destPath -Force
+            Write-Info "Copied: $file"
+        } else {
+            Write-Warn "Optional file not found, skipping: $file"
+        }
+    }
+
+    # Copy Source directory with all function files
+    $sourceSubDir = Join-Path $sourceDir 'Source'
+    if (Test-Path $sourceSubDir) {
+        $destSourceDir = Join-Path $destDir 'Source'
+        Write-Info "Copying Source directory with function files..."
+        Copy-Item $sourceSubDir $destSourceDir -Recurse -Force
+        $functionCount = (Get-ChildItem -Path $sourceSubDir -Filter "*.ps1" -Recurse).Count
+        Write-Info "Copied: Source/ ($functionCount function files)"
     } else {
-        Write-Warn "Optional file not found, skipping: $file"
+        Write-Warn "Source directory not found - module may not work properly"
     }
 }
 

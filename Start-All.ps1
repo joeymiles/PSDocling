@@ -3,6 +3,7 @@ param(
   [switch]$OpenBrowser,
   [switch]$SkipPythonCheck,
   [switch]$EnsureUrlAcl,
+  [switch]$ClearHistory,
   [int]$ApiPort = 8080,
   [int]$WebPort = 8081
 )
@@ -36,9 +37,18 @@ function Ensure-UrlAcl($port) {
 
 Push-Location $PSScriptRoot
 try {
-  $modulePath = Join-Path $PSScriptRoot 'PSDocling.psm1'
-  if (-not (Test-Path $modulePath)) {
-    Write-Err "PSDocling.psm1 not found at $modulePath"
+  # Try to use built module first, fall back to source
+  $buildModulePath = Join-Path $PSScriptRoot 'Build\PSDocling.psm1'
+  $sourceModulePath = Join-Path $PSScriptRoot 'PSDocling.psm1'
+
+  if (Test-Path $buildModulePath) {
+    $modulePath = $buildModulePath
+    Write-Info "Using built module from Build folder"
+  } elseif (Test-Path $sourceModulePath) {
+    $modulePath = $sourceModulePath
+    Write-Warn "Build folder not found, using source module"
+  } else {
+    Write-Err "PSDocling.psm1 not found in Build or root folder"
     exit 1
   }
 
@@ -50,15 +60,12 @@ try {
   }
 
   Write-Info "Initializing system..."
-  if ($GenerateFrontend -and $SkipPythonCheck) {
-    Initialize-DoclingSystem -GenerateFrontend -SkipPythonCheck | Out-Null
-  } elseif ($GenerateFrontend) {
-    Initialize-DoclingSystem -GenerateFrontend | Out-Null
-  } elseif ($SkipPythonCheck) {
-    Initialize-DoclingSystem -SkipPythonCheck | Out-Null
-  } else {
-    Initialize-DoclingSystem | Out-Null
-  }
+  $initParams = @{}
+  if ($GenerateFrontend) { $initParams['GenerateFrontend'] = $true }
+  if ($SkipPythonCheck) { $initParams['SkipPythonCheck'] = $true }
+  if ($ClearHistory) { $initParams['ClearHistory'] = $true }
+
+  Initialize-DoclingSystem @initParams | Out-Null
 
   # Try to apply port overrides to the exported configuration hashtable
   try {

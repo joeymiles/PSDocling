@@ -57,6 +57,25 @@ $tempFiles | ForEach-Object {
     }
 }
 
-Clear-PSDoclingSystem -force $true
+# Import module to ensure functions are available
+# Try to use built module first, fall back to source
+$buildModulePath = Join-Path $PSScriptRoot 'Build\PSDocling.psm1'
+$sourceModulePath = Join-Path $PSScriptRoot 'PSDocling.psm1'
+
+if (Test-Path $buildModulePath) {
+    $modulePath = $buildModulePath
+} elseif (Test-Path $sourceModulePath) {
+    $modulePath = $sourceModulePath
+} else {
+    Write-Warn "PSDocling module not found in Build or root folder, skipping system cleanup"
+    $modulePath = $null
+}
+
+if ($modulePath) {
+    Import-Module $modulePath -Force
+    if (Get-Command Clear-PSDoclingSystem -ErrorAction SilentlyContinue) {
+        Clear-PSDoclingSystem -force $true
+    }
+}
 
 Write-Ok "Docling System stopped."

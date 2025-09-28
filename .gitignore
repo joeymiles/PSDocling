@@ -79,7 +79,9 @@ settings.local.*
 Capture.*
 Screenshot.*
 # But allow specific documentation screenshots
-!Frontend.JPG
+!FrontEnd.JPG
+!UploadedFile.JPG
+!Reprocess.JPG
 !ProcessingOptions.JPG
 
 # Documentation build artifacts

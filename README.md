@@ -81,6 +81,14 @@ Access the web frontend at `http://localhost:8081` to:
 - Re-process documents with different format options
 - View detailed error reports
 
+#### Web Interface Screenshots
+
+**Main Interface - File Upload and Processing:**
+![PSDocling Web Interface](FrontEnd.JPG)
+
+**Document Upload and Queue Management:**
+![Document Upload Interface](uploaded_file.JPG)
+
 **Recent Improvements:**
 - Processed Files section now shows only generated output files (not original uploads)
 - Each generated file includes a "Re-process" button for format conversion

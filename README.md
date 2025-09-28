@@ -1,11 +1,12 @@
-# 📄 PSDocling - PowerShell Document Processing Module
+# 📄 PSDocling - A PowerShell Document Processing Module
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
+[![Docling](https://img.shields.io/badge/Python-3.8%2B-amber.svg)](https://docling-project.github.io/docling/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-3.0.0-brightgreen.svg)](https://github.com/joeymiles/PSDocling)
 
-A powerful PowerShell module that provides enterprise-grade document conversion capabilities using Python's Docling library. Convert PDFs, Office documents, HTML, Markdown, and images to various formats with advanced processing options.
+Say hello to the powerful PowerShell module that provides enterprise-grade document conversion capabilities using Python's Docling library. Convert PDFs, Office documents, HTML, Markdown, and images to various formats with advanced processing options.
 
 ## ✨ Features
 

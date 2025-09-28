@@ -101,6 +101,9 @@ Access the web frontend at `http://localhost:8081` to:
 **Main Interface - File Upload and Processing:**
 ![PSDocling Web Interface](FrontEnd.JPG)
 
+**Processing Options and Enrichment Settings:**
+![Processing Options](ProcessingOptions.JPG)
+
 **Document Upload and Queue Management:**
 ![Document Upload Interface](uploaded_file.JPG)
 

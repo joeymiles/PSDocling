@@ -202,7 +202,7 @@ python -m pip install docling
 
 ## 📝 License
 
-Copyright (c) 2025 Joey A Miles. All rights reserved.
+MIT
 
 ## 💬 Support
 

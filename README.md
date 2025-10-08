@@ -1,4 +1,4 @@
-# 📄 PSDocling - A PowerShell Document Processing Module 
+# 📄 PowerShell-wrapped Python Docling document processing system with queue management, enrichment, and web frontend. 
  
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docling](https://img.shields.io/badge/Docling%2B-red.svg)](https://docling-project.github.io/docling/)

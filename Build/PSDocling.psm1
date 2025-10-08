@@ -1,10 +1,10 @@
 ﻿#Requires -Version 5.1
 # PSDocling Module - Built from source files
 # Docling Document Processing System
-# Version: 3.0.0
+# Version: 3.1.0
 
 $script:DoclingSystem = @{
-    Version          = "3.0.0"
+    Version          = "3.1.0"
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = ".\ProcessedDocuments"
     APIPort          = 8080
@@ -751,6 +751,411 @@ print(json.dumps({"success": True, "chunks_file": str(out_path)}))
 }
 
 
+# Public: Optimize-ChunksForRAG
+function Optimize-ChunksForRAG {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [string]$InputPath,
+
+        [string]$OutputPath,
+
+        [ValidateRange(50, 1000)]
+        [int]$TargetMinTokens = 200,
+
+        [ValidateRange(100, 2000)]
+        [int]$TargetMaxTokens = 400,
+
+        [ValidateRange(10, 200)]
+        [int]$MinTokens = 50,
+
+        [ValidateRange(0.0, 1.0)]
+        [double]$DeduplicationThreshold = 0.90
+    )
+
+    process {
+        if (-not (Test-Path $InputPath)) {
+            throw "Input file not found: $InputPath"
+        }
+
+        $inFile = Get-Item -LiteralPath $InputPath
+        if (-not $OutputPath) {
+            $baseName = $inFile.BaseName -replace '\.chunks$',''
+            $OutputPath = Join-Path $inFile.DirectoryName ($baseName + ".optimized.jsonl")
+        }
+
+        Write-Verbose "Optimizing chunks from: $InputPath"
+        Write-Verbose "Target token range: $MinTokens - $TargetMaxTokens (ideal: $TargetMinTokens-$TargetMaxTokens)"
+
+        $py = @"
+import json, sys, re, hashlib, html
+from pathlib import Path
+from collections import defaultdict
+
+def normalize_text(text):
+    """Normalize text: decode HTML entities, trim whitespace, unify line endings"""
+    if not text:
+        return text
+    text = html.unescape(text)
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+def validate_code_fences(text):
+    """Check if all code fences are properly closed"""
+    if not text:
+        return True, 0
+    fence_count = text.count('```')
+    return fence_count % 2 == 0, fence_count
+
+def compute_hash(text):
+    """Compute MD5 hash for deduplication"""
+    normalized = normalize_text(text) if text else ""
+    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+def is_near_duplicate(text1, text2, threshold=0.90):
+    """Check if two texts are near-duplicates using character overlap"""
+    if not text1 or not text2:
+        return False
+
+    len1, len2 = len(text1), len(text2)
+    if len1 == 0 or len2 == 0:
+        return False
+
+    # Quick length check
+    if abs(len1 - len2) / max(len1, len2) > 0.3:
+        return False
+
+    # Character set overlap
+    set1, set2 = set(text1.lower()), set(text2.lower())
+    intersection = len(set1 & set2)
+    union = len(set1 | set2)
+
+    if union == 0:
+        return False
+
+    similarity = intersection / union
+    return similarity >= threshold
+
+def estimate_tokens(text):
+    """Estimate token count (4 chars â‰ˆ 1 token)"""
+    return len(text) // 4 if text else 0
+
+def detect_chunk_type(text):
+    """Detect chunk content type"""
+    if not text:
+        return "empty"
+    text_stripped = text.strip()
+
+    if '```' in text:
+        return "code"
+    if text_stripped.startswith('#'):
+        return "heading"
+    if re.match(r'^(\s*[-*+]\s|^\s*\d+\.\s)', text, re.MULTILINE):
+        return "list"
+    if '|' in text and text.count('|') > 3:
+        return "table"
+    if re.match(r'^\s*(NOTE|TIP|WARNING|IMPORTANT|CAUTION):', text, re.IGNORECASE):
+        return "note"
+
+    return "paragraph"
+
+def merge_chunk_pair(chunk1, chunk2):
+    """Merge two chunks into one"""
+    text1 = chunk1.get("text", "")
+    text2 = chunk2.get("text", "")
+    merged_text = text1 + "\n\n" + text2
+    merged_normalized = normalize_text(merged_text)
+
+    # Merge page spans
+    page_span1 = chunk1.get("page_span")
+    page_span2 = chunk2.get("page_span")
+    merged_page_span = None
+
+    if page_span1 and page_span2:
+        pages = []
+        if isinstance(page_span1, list):
+            pages.extend(page_span1)
+        if isinstance(page_span2, list):
+            pages.extend(page_span2)
+        if pages:
+            merged_page_span = [min(pages), max(pages)]
+    elif page_span1:
+        merged_page_span = page_span1
+    elif page_span2:
+        merged_page_span = page_span2
+
+    return {
+        "text": merged_text,
+        "text_normalized": merged_normalized,
+        "token_count": estimate_tokens(merged_normalized),
+        "page_span": merged_page_span,
+        "section_path": chunk1.get("section_path") or chunk2.get("section_path"),
+        "doc_id": chunk1.get("doc_id"),
+        "source_path": chunk1.get("source_path"),
+        "chunk_type": detect_chunk_type(merged_normalized),
+        "hash": compute_hash(merged_normalized),
+        "char_start": chunk1.get("char_start", 0),
+        "char_end": chunk2.get("char_end", 0),
+        "lang": chunk1.get("lang", "en"),
+        "merged_from": [chunk1.get("id"), chunk2.get("id")]
+    }
+
+def split_large_chunk(chunk, max_tokens):
+    """Split chunk at sentence boundaries"""
+    text = chunk.get("text_normalized") or chunk.get("text", "")
+    if not text or estimate_tokens(text) <= max_tokens:
+        return [chunk]
+
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) <= 1:
+        return [chunk]
+
+    sub_chunks = []
+    current = []
+    current_tokens = 0
+
+    for sent in sentences:
+        sent_tokens = estimate_tokens(sent)
+        if current_tokens + sent_tokens > max_tokens and current:
+            sub_text = " ".join(current)
+            sub_chunks.append({
+                **chunk,
+                "text": sub_text,
+                "text_normalized": normalize_text(sub_text),
+                "token_count": current_tokens,
+                "hash": compute_hash(sub_text),
+                "split_from": chunk.get("id")
+            })
+            current = [sent]
+            current_tokens = sent_tokens
+        else:
+            current.append(sent)
+            current_tokens += sent_tokens
+
+    if current:
+        sub_text = " ".join(current)
+        sub_chunks.append({
+            **chunk,
+            "text": sub_text,
+            "text_normalized": normalize_text(sub_text),
+            "token_count": current_tokens,
+            "hash": compute_hash(sub_text),
+            "split_from": chunk.get("id")
+        })
+
+    return sub_chunks if sub_chunks else [chunk]
+
+# Read input file
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+min_tokens = int(sys.argv[3])
+target_min = int(sys.argv[4])
+target_max = int(sys.argv[5])
+dedup_threshold = float(sys.argv[6])
+
+chunks = []
+with input_path.open('r', encoding='utf-8') as f:
+    for line in f:
+        if line.strip():
+            chunks.append(json.loads(line))
+
+print(f"Loaded {len(chunks)} chunks", file=sys.stderr)
+
+# Step 1: Normalize and add missing metadata
+for chunk in chunks:
+    text = chunk.get("text", "")
+    if "text_normalized" not in chunk:
+        chunk["text_normalized"] = normalize_text(text)
+    if "token_count" not in chunk or chunk["token_count"] is None:
+        chunk["token_count"] = estimate_tokens(chunk["text_normalized"])
+    if "hash" not in chunk:
+        chunk["hash"] = compute_hash(chunk["text_normalized"])
+    if "chunk_type" not in chunk:
+        chunk["chunk_type"] = detect_chunk_type(chunk["text_normalized"])
+
+# Step 2: Merge split code blocks (unclosed fences)
+merged_chunks = []
+i = 0
+merge_count = 0
+
+while i < len(chunks):
+    chunk = chunks[i]
+    text = chunk.get("text_normalized", "")
+    fence_valid, fence_count = validate_code_fences(text)
+
+    # If unclosed fence, try to merge with next
+    if not fence_valid and i + 1 < len(chunks):
+        next_chunk = chunks[i + 1]
+        merged = merge_chunk_pair(chunk, next_chunk)
+        merged_valid, _ = validate_code_fences(merged.get("text_normalized", ""))
+
+        if merged_valid:
+            merged["warnings"] = merged.get("warnings", [])
+            merged["warnings"].append("merged_split_code_block")
+            merged_chunks.append(merged)
+            merge_count += 1
+            i += 2  # Skip next chunk
+            continue
+
+    merged_chunks.append(chunk)
+    i += 1
+
+print(f"Merged {merge_count} split code blocks", file=sys.stderr)
+chunks = merged_chunks
+
+# Step 3: Remove duplicates and near-duplicates
+seen_hashes = set()
+seen_texts = []
+dedup_chunks = []
+duplicate_count = 0
+
+for chunk in chunks:
+    chunk_hash = chunk.get("hash")
+    text = chunk.get("text_normalized", "")
+
+    # Exact duplicate check
+    if chunk_hash in seen_hashes:
+        duplicate_count += 1
+        continue
+
+    # Near-duplicate check (against last 20 chunks)
+    is_dup = False
+    for prev_text in seen_texts[-20:]:
+        if is_near_duplicate(text, prev_text, dedup_threshold):
+            duplicate_count += 1
+            is_dup = True
+            break
+
+    if not is_dup:
+        seen_hashes.add(chunk_hash)
+        seen_texts.append(text)
+        dedup_chunks.append(chunk)
+
+print(f"Removed {duplicate_count} duplicates", file=sys.stderr)
+chunks = dedup_chunks
+
+# Step 4: Adjust chunk sizes (merge tiny, split large)
+adjusted = []
+buffer = []
+buffer_tokens = 0
+adjust_count = 0
+
+for chunk in chunks:
+    chunk_tokens = chunk.get("token_count", 0)
+    chunk_type = chunk.get("chunk_type", "paragraph")
+
+    # Keep code, tables, headings atomic
+    if chunk_type in ["code", "table", "heading"]:
+        if buffer:
+            merged = buffer[0] if len(buffer) == 1 else merge_chunk_pair(buffer[0], buffer[-1])
+            adjusted.append(merged)
+            buffer = []
+            buffer_tokens = 0
+        adjusted.append(chunk)
+        continue
+
+    # Tiny chunk: add to buffer
+    if chunk_tokens < min_tokens:
+        buffer.append(chunk)
+        buffer_tokens += chunk_tokens
+
+        if buffer_tokens >= target_min:
+            merged = buffer[0] if len(buffer) == 1 else merge_chunk_pair(buffer[0], buffer[-1])
+            adjusted.append(merged)
+            adjust_count += 1
+            buffer = []
+            buffer_tokens = 0
+    else:
+        # Flush buffer
+        if buffer:
+            merged = buffer[0] if len(buffer) == 1 else merge_chunk_pair(buffer[0], buffer[-1])
+            adjusted.append(merged)
+            adjust_count += 1
+            buffer = []
+            buffer_tokens = 0
+
+        # Split large chunks
+        if chunk_tokens > target_max * 1.5:
+            adjusted.extend(split_large_chunk(chunk, target_max))
+            adjust_count += 1
+        else:
+            adjusted.append(chunk)
+
+# Flush remaining buffer
+if buffer:
+    merged = buffer[0] if len(buffer) == 1 else merge_chunk_pair(buffer[0], buffer[-1])
+    adjusted.append(merged)
+
+print(f"Adjusted {adjust_count} chunk sizes", file=sys.stderr)
+
+# Step 5: Renumber IDs and write output
+output_path.parent.mkdir(parents=True, exist_ok=True)
+with output_path.open('w', encoding='utf-8') as f:
+    for i, chunk in enumerate(adjusted):
+        chunk["id"] = i
+        f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+
+# Summary
+summary = {
+    "success": True,
+    "input_chunks": len(chunks) + duplicate_count,
+    "output_chunks": len(adjusted),
+    "merged_code_blocks": merge_count,
+    "duplicates_removed": duplicate_count,
+    "size_adjusted": adjust_count,
+    "output_file": str(output_path)
+}
+print(json.dumps(summary, ensure_ascii=False))
+"@
+
+        $tempPy = Join-Path $env:TEMP ("docling_optimize_" + ([guid]::NewGuid().ToString("N").Substring(0,8)) + ".py")
+        $py | Set-Content -LiteralPath $tempPy -Encoding UTF8
+
+        try {
+            $errorFile = Join-Path $env:TEMP "docling_optimize_error.txt"
+
+            $pyArgs = @(
+                $tempPy,
+                $inFile.FullName,
+                $OutputPath,
+                $MinTokens.ToString(),
+                $TargetMinTokens.ToString(),
+                $TargetMaxTokens.ToString(),
+                $DeduplicationThreshold.ToString()
+            )
+
+            Write-Verbose "Running optimization..."
+            $stdout = & python @pyArgs 2>$errorFile
+
+            if ($LASTEXITCODE -ne 0) {
+                $stderr = Get-Content $errorFile -Raw -ErrorAction SilentlyContinue
+                Write-Error "Optimization failed: $stderr"
+                throw "Python exit code: $LASTEXITCODE"
+            }
+
+            # Parse summary from last line
+            $lines = $stdout -split "`n"
+            $summary = $lines[-1] | ConvertFrom-Json -ErrorAction SilentlyContinue
+
+            if ($summary) {
+                Write-Host ("Optimized {0} to {1} chunks" -f $summary.input_chunks, $summary.output_chunks) -ForegroundColor Green
+                Write-Host ("  - Merged split code blocks: {0}" -f $summary.merged_code_blocks) -ForegroundColor Cyan
+                Write-Host ("  - Removed duplicates: {0}" -f $summary.duplicates_removed) -ForegroundColor Cyan
+                Write-Host ("  - Size-adjusted: {0}" -f $summary.size_adjusted) -ForegroundColor Cyan
+                Write-Host ("  - Output: {0}" -f $OutputPath) -ForegroundColor Yellow
+            }
+
+            return $OutputPath
+        }
+        finally {
+            Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+
 # Public: Set-ProcessingStatus
 function Set-ProcessingStatus {
     param([hashtable]$Status)
@@ -845,6 +1250,11 @@ function Start-DocumentConversion {
         ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
         ChunkTableSerialization  = $ChunkTableSerialization
         ChunkPictureStrategy     = $ChunkPictureStrategy
+        ChunkImagePlaceholder    = $ChunkImagePlaceholder
+        ChunkOverlapTokens       = $ChunkOverlapTokens
+        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
+        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
+        ChunkModelPreset         = $ChunkModelPreset
 
         Status                   = 'Queued'
         QueuedTime               = Get-Date
@@ -873,6 +1283,11 @@ function Start-DocumentConversion {
         ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
         ChunkTableSerialization  = $ChunkTableSerialization
         ChunkPictureStrategy     = $ChunkPictureStrategy
+        ChunkImagePlaceholder    = $ChunkImagePlaceholder
+        ChunkOverlapTokens       = $ChunkOverlapTokens
+        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
+        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
+        ChunkModelPreset         = $ChunkModelPreset
     }
 
     Write-Host "Started conversion for: $($documentStatus.FileName) (ID: $DocumentId)" -ForegroundColor Green
@@ -1394,383 +1809,336 @@ function New-FrontendFiles {
         New-Item -ItemType Directory -Path $frontendDir -Force | Out-Null
     }
 
-    # Simple HTML file with version
+    # Pull version from module context if present, otherwise default
     $version = $script:DoclingSystem.Version
+    if (-not $version) { $version = "3.1.0" }
+
+    # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
     $html = @"
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>PSDocling v$version</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-            color: #e0e0e0;
-            min-height: 100vh;
+        :root{
+            --bg: #0f1115;
+            --panel: #171a21;
+            --panel-2: #1d2230;
+            --stroke: #2a3244;
+            --muted: #9aa3b2;
+            --text: #e7eef7;
+            --brand: #4db6ff;
+            --brand-2:#0ea5e9;
+            --ok:#10b981;
+            --warn:#f59e0b;
+            --err:#ef4444;
+            --focus: #93c5fd;
+            --ring: 0 0 0 3px rgba(147,197,253,.35);
+            --radius: 14px;
+            --shadow: 0 8px 30px rgba(0,0,0,.35);
         }
-        .header {
-            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
-            padding: 25px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            border: 1px solid #404040;
-            box-shadow: 0 4px 15px rgba(4, 159, 217, 0.1);
-        }
-        .header h1 {
-            margin: 0 0 10px 0;
-            background: linear-gradient(45deg, #049fd9, #66d9ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            font-size: 2.2em;
-            font-weight: 600;
-        }
-        .upload-area {
-            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
-            border: 2px dashed #555;
-            border-radius: 12px;
-            padding: 40px;
-            text-align: center;
-            margin-bottom: 25px;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-        .upload-area::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(4, 159, 217, 0.1), transparent);
-            transition: left 0.5s;
-        }
-        .upload-area:hover {
-            border-color: #049fd9;
-            background: linear-gradient(135deg, #2e2e2e 0%, #3e3e3e 100%);
-            box-shadow: 0 4px 20px rgba(4, 159, 217, 0.2);
-        }
-        .upload-area:hover::before {
-            left: 100%;
-        }
-        .btn {
-            background: linear-gradient(135deg, #049fd9 0%, #0284c7 100%);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            box-shadow: 0 2px 10px rgba(4, 159, 217, 0.3);
-        }
-        .btn:hover {
-            background: linear-gradient(135deg, #0284c7 0%, #049fd9 100%);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(4, 159, 217, 0.4);
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 20px;
-            margin-bottom: 25px;
-        }
-        .stat {
-            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
-            padding: 25px;
-            border-radius: 12px;
-            text-align: center;
-            border: 1px solid #404040;
-            transition: all 0.3s ease;
-        }
-        .stat:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 20px rgba(4, 159, 217, 0.15);
-            border-color: #049fd9;
-        }
-        .stat-value {
-            font-size: 2.5em;
-            font-weight: 700;
-            background: linear-gradient(45deg, #049fd9, #66d9ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-bottom: 5px;
-        }
-        .stat div:last-child {
-            color: #b0b0b0;
-            font-size: 0.9em;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .results {
-            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
-            border-radius: 12px;
-            padding: 25px;
-            border: 1px solid #404040;
-        }
-        .results h3 {
-            color: #049fd9;
-            margin-top: 0;
-            font-size: 1.3em;
-            font-weight: 600;
-        }
-        .result-item {
-            padding: 15px;
-            border-bottom: 1px solid #404040;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-radius: 8px;
-            margin-bottom: 8px;
-            transition: all 0.3s ease;
-        }
-        .result-item:hover {
-            background: rgba(4, 159, 217, 0.1);
-            border-color: #049fd9;
-        }
-        .result-item:last-child {
-            border-bottom: none;
-            margin-bottom: 0;
-        }
-        .result-item strong {
-            color: #ffffff;
-        }
-        .result-item a {
-            color: #049fd9;
-            text-decoration: none;
-            padding: 6px 12px;
-            border: 1px solid #049fd9;
-            border-radius: 6px;
-            transition: all 0.3s ease;
-            font-size: 0.9em;
-        }
-        .result-item a:hover {
-            background: #049fd9;
-            color: white;
-            transform: scale(1.05);
-        }
-        .format-selector {
-            background: #1a1a1a;
-            border: 1px solid #555;
-            color: #e0e0e0;
-            padding: 4px 8px;
-            border-radius: 4px;
-            margin: 0 8px;
-            font-size: 0.85em;
-        }
-        .format-selector:focus {
-            border-color: #049fd9;
-            outline: none;
-        }
-        .reprocess-btn {
-            background: #666;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-            cursor: pointer;
-            margin-left: 8px;
-            transition: background 0.3s ease;
-        }
-        .reprocess-btn:hover {
-            background: #049fd9;
-        }
-        .hidden { display: none; }
-        .progress {
-            width: 100%;
-            height: 8px;
-            background: #404040;
-            border-radius: 10px;
-            overflow: hidden;
-            margin: 15px 0;
-        }
-        .progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #049fd9, #66d9ff);
-            width: 0%;
-            transition: width 0.3s ease;
-            border-radius: 10px;
-        }
-        #status {
-            color: #049fd9;
-            font-weight: 600;
-        }
-        /* Status indicators */
-        .status-ready { color: #049fd9; }
-        .status-queued { color: #049fd9; }
-        .status-processing { color: #049fd9; }
-        .status-completed { color: #10b981; }
-        .status-error {
-            color: #ef4444;
-            cursor: pointer;
-            text-decoration: underline;
-        }
-        .status-error:hover {
-            color: #f87171;
+        @media (prefers-color-scheme: light){
+            :root{
+                --bg:#f7f9fc; --panel:#ffffff; --panel-2:#f4f7fb; --stroke:#d9e1ee;
+                --muted:#5b6574; --text:#0e1726; --brand:#0369a1; --brand-2:#0284c7;
+                --focus:#1d4ed8; --ring:0 0 0 3px rgba(29,78,216,.25);
+                --shadow:0 8px 30px rgba(10,30,60,.08);
+            }
         }
 
-        /* Progress wheel */
-        .progress-container {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .progress-wheel {
-            width: 16px;
-            height: 16px;
-            border: 2px solid #404040;
-            border-top: 2px solid #049fd9;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-            flex-shrink: 0;
-        }
-        .progress-text {
-            font-size: 12px;
-            color: #6b7280;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .start-btn {
-            background: #3b82f6;
-            color: white;
-            border: none;
-            padding: 4px 12px;
-            border-radius: 4px;
-            font-size: 0.8em;
-            cursor: pointer;
-            margin-left: 8px;
-            transition: background 0.3s ease;
-        }
-        .start-btn:hover {
-            background: #3b82f6;
+        *{box-sizing:border-box}
+        html,body{height:100%; margin:0; padding:0}
+        body{
+            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol";
+            background:
+                radial-gradient(1200px 1200px at -10% -10%, rgba(77,182,255,.08), transparent 55%),
+                radial-gradient(1000px 1000px at 110% -20%, rgba(77,182,255,.08), transparent 55%),
+                linear-gradient(180deg, var(--bg), var(--bg));
+            color:var(--text);
+            -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
         }
 
-        /* Modal styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.7);
+        .container{
+            max-width:1200px;
+            margin-inline:auto;
+            padding:24px;
+            display:grid;
+            gap:20px;
         }
-        .modal-content {
-            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
-            margin: 5% auto;
-            padding: 30px;
-            border: 1px solid #555;
-            border-radius: 12px;
-            width: 80%;
-            max-width: 800px;
-            max-height: 80vh;
-            overflow-y: auto;
-            color: #e0e0e0;
+
+        /* Header */
+        .header{
+            background:linear-gradient(180deg, var(--panel), var(--panel-2));
+            border:1px solid var(--stroke);
+            border-radius:var(--radius);
+            padding:24px;
+            box-shadow:var(--shadow);
+            position:sticky; top:16px; z-index:5;
         }
-        .modal-header {
-            border-bottom: 1px solid #555;
-            padding-bottom: 15px;
-            margin-bottom: 20px;
+        .header-row{
+            display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
         }
-        .modal-header h2 {
-            margin: 0;
-            color: #ef4444;
+        .brand{
+            display:flex; align-items:center; gap:12px;
         }
-        .close {
-            color: #aaa;
-            float: right;
-            font-size: 28px;
-            font-weight: bold;
-            cursor: pointer;
+        .logo{
+            width:36px; height:36px; border-radius:10px;
+            background: radial-gradient(65% 65% at 35% 30%, var(--brand), transparent 60%),
+                        linear-gradient(135deg, var(--brand-2), rgba(77,182,255,.25));
+            border:1px solid var(--stroke);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,.06), 0 8px 18px rgba(3, 169, 244, .08);
         }
-        .close:hover {
-            color: #fff;
+        h1{
+            margin:0; font-size: clamp(20px, 3.2vw, 28px); font-weight:700; letter-spacing:.2px;
+            background: linear-gradient(45deg, var(--text), rgba(77,182,255,.9));
+            -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
         }
-        .error-section {
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #1a1a1a;
-            border-radius: 8px;
-            border-left: 4px solid #ef4444;
+        .badge{
+            margin-left:6px;
+            padding:4px 8px; border-radius:999px; font-size:.85rem; font-weight:600;
+            color:var(--brand);
+            background:linear-gradient(180deg, rgba(77,182,255,.10), rgba(77,182,255,.03));
+            border:1px solid var(--stroke);
         }
-        .error-section h3 {
-            margin-top: 0;
-            color: #f87171;
+        .subtitle{margin:6px 0 0 0; color:var(--muted)}
+        .status{font-weight:600}
+        .status-dot{
+            width:8px;height:8px;border-radius:99px;display:inline-block;margin-right:6px;vertical-align:baseline;
+            background:var(--warn); box-shadow:0 0 0 3px rgba(11, 132, 245, 0.2);
         }
-        .error-code {
-            background: #0f0f0f;
-            padding: 10px;
-            border-radius: 6px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            max-height: 200px;
-            overflow-y: auto;
-            border: 1px solid #333;
+
+        /* Card */
+        .card{
+            background:linear-gradient(180deg, var(--panel), var(--panel-2));
+            border:1px solid var(--stroke); border-radius:var(--radius);
+            padding:20px; box-shadow:var(--shadow);
         }
+        .card-title{
+            margin:0 0 10px 0; font-size:1.15rem; font-weight:700; letter-spacing:.2px;
+            color:var(--brand);
+        }
+
+        /* Upload */
+        .drop{
+            border:1.5px dashed var(--stroke);
+            border-radius:calc(var(--radius) - 4px);
+            padding:28px; text-align:center; position:relative; overflow:hidden;
+            background:linear-gradient(180deg, rgba(77,182,255,.06), transparent);
+            transition:border-color .2s, transform .15s;
+            outline:none;
+        }
+        .drop:hover{border-color:var(--brand); transform: translateY(-1px)}
+        .drop:focus-visible{box-shadow: var(--ring); border-color:var(--focus)}
+        .drop .shimmer{
+            content:""; position:absolute; inset:0; translate:-100% 0;
+            background:linear-gradient(90deg, transparent, rgba(77,182,255,.12), transparent);
+            animation: sweep 2.6s linear infinite;
+        }
+        @keyframes sweep{to{translate:100% 0}}
+        .drop h3{margin:6px 0 14px 0}
+        .muted{color:var(--muted)}
+        .kbd{
+            padding:2px 6px; border-radius:6px; border:1px solid var(--stroke); background:rgba(0,0,0,.1);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+            font-size:.85em;
+        }
+
+        .btn{
+            appearance:none; border:1px solid var(--stroke); background:linear-gradient(180deg, var(--brand-2), var(--brand));
+            color:white; padding:10px 16px; border-radius:10px; font-weight:700; cursor:pointer;
+            box-shadow:0 6px 18px rgba(77,182,255,.23); transition:transform .12s ease, box-shadow .2s ease, opacity .2s;
+        }
+        .btn:hover{transform:translateY(-1px); box-shadow:0 10px 24px rgba(77,182,255,.28)}
+        .btn:disabled{opacity:.55; cursor:not-allowed; box-shadow:none}
+
+        .btn-ghost{
+            appearance:none; border:1px solid var(--stroke); background:linear-gradient(180deg, rgba(77,182,255,.06), rgba(77,182,255,.03));
+            color:var(--brand); padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer;
+            transition:transform .12s ease, background .2s ease;
+        }
+        .btn-ghost:hover{transform:translateY(-1px); background:linear-gradient(180deg, rgba(77,182,255,.1), rgba(77,182,255,.06))}
+
+        /* Stats */
+        .stats{ display:grid; grid-template-columns: repeat(2, 1fr); gap:14px; }
+        @media (min-width:780px){ .stats{grid-template-columns: repeat(4, 1fr);} }
+        .stat{
+            background:linear-gradient(180deg, var(--panel), var(--panel-2));
+            border:1px solid var(--stroke); padding:16px; border-radius:12px; text-align:center;
+            transition: transform .12s ease, box-shadow .2s ease, border-color .2s ease;
+        }
+        .stat:hover{transform:translateY(-2px); border-color:rgba(77,182,255,.55); box-shadow:0 10px 24px rgba(77,182,255,.10)}
+        .value{
+            font-size:2.1rem; font-weight:800; line-height:1.1;
+            background:linear-gradient(45deg, #fff, var(--brand)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+            margin-bottom:6px;
+        }
+        .label{color:var(--muted); letter-spacing:.12em; font-size:.8rem; text-transform:uppercase}
+
+        /* Progress bar */
+        .progress{height:10px; border-radius:999px; background:rgba(255,255,255,.06); border:1px solid var(--stroke); overflow:hidden; margin: 15px 0; width: 100%;}
+        .progress-bar{height:100%; width:0%; background:linear-gradient(90deg, var(--brand-2), var(--brand)); transition:width .25s ease}
+
+        /* Status chips & wheel */
+        .chip{padding:4px 8px; border-radius:999px; font-size:.85rem; font-weight:700; border:1px solid var(--stroke)}
+        .status-ready{color:var(--brand)}
+        .status-queued{color:var(--warn)}
+        .status-processing{color:var(--brand)}
+        .status-completed{color:var(--ok)}
+        .status-error{color:var(--err); text-decoration:underline; cursor:pointer}
+        .status-error:hover{opacity:.9}
+
+        .wheel{width:16px; height:16px; border-radius:99px; border:2px solid rgba(255,255,255,.1); border-top:2px solid var(--brand); animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .row{display:flex; align-items:center; gap:8px}
+
+        /* Modal */
+        .modal{display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:20; align-items:center; justify-content:center; padding:24px}
+        .modal.in,.modal.show{display:flex}
+        .modal-content{
+            background:linear-gradient(180deg, var(--panel), var(--panel-2));
+            width:min(920px, 92vw); max-height:85vh; overflow:auto;
+            border:1px solid var(--stroke); border-radius:16px; box-shadow:var(--shadow); padding:20px; margin: 5% auto;
+        }
+        .modal-header{display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--stroke); padding-bottom:12px; margin-bottom:12px}
+        .close{cursor:pointer; font-size:26px; color:var(--muted); float:right}
+        .close:hover{color:var(--text)}
+        .error-section{margin:14px 0 20px 0; padding:12px 15px; border-left:4px solid var(--err); background:rgba(239,68,68,.06); border-radius:10px}
+        .error-section h3{margin:0 0 10px 0; color:#ff8787}
+        .error-code{
+            background:#0b0d13; color:#e1e7f5; border:1px solid #242b3a; border-radius:10px;
+            padding:12px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; font-size:12px; overflow:auto;
+            white-space: pre-wrap; max-height: 200px; overflow-y: auto;
+        }
+
+        /* Utilities and legacy mappings */
+        .sr-only{position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0}
+        .hidden{display:none}
+        details summary{cursor:pointer; color:var(--brand)}
+        a.link{color:var(--brand); text-decoration:none}
+        a.link:hover{text-decoration:underline}
+
+        .stat-value { font-size:2.1rem; font-weight:800; line-height:1.1;
+            background:linear-gradient(45deg, #fff, var(--brand)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:6px; }
+        .results { background:linear-gradient(180deg, var(--panel), var(--panel-2)); border:1px solid var(--stroke); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); }
+        .results h3 { margin:0 0 10px 0; font-size:1.15rem; font-weight:700; letter-spacing:.2px; color:var(--brand); }
+        .result-item { padding:16px; border-top:1px solid var(--stroke); display:flex; flex-direction:column; gap:10px }
+        .result-item:first-child{border-top:none}
+        .result-item:hover { background: rgba(77,182,255,.05); }
+        .upload-area { border:1.5px dashed var(--stroke); border-radius:calc(var(--radius) - 4px); padding:28px; text-align:center; position:relative; overflow:hidden; background:linear-gradient(180deg, rgba(77,182,255,.06), transparent); transition:border-color .2s, transform .15s; }
+        .upload-area:hover{border-color:var(--brand); transform: translateY(-1px)}
+        .format-selector { background: var(--panel-2); border: 1px solid var(--stroke); color: var(--text); padding: 4px 8px; border-radius: 4px; margin: 0 8px; font-size: 0.85em; }
+        .format-selector:focus { border-color: var(--brand); outline: none; box-shadow: var(--ring); }
+        .reprocess-btn { appearance:none; border:1px solid var(--stroke); background:linear-gradient(180deg, rgba(77,182,255,.06), rgba(77,182,255,.03)); color:var(--brand); padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .12s ease, background .2s ease; }
+        .reprocess-btn:hover{transform:translateY(-1px); background:linear-gradient(180deg, rgba(77,182,255,.1), rgba(77,182,255,.06))}
+        .progress-container { display: inline-flex; align-items: center; gap: 8px; }
+        .progress-wheel { width:16px; height:16px; border-radius:99px; border:2px solid rgba(255,255,255,.1); border-top:2px solid var(--brand); animation:spin 1s linear infinite; display: inline-block; flex-shrink: 0; }
+        .progress-text { font-size: 12px; color: var(--muted); }
+        .download-all-btn { appearance:none; border:1px solid var(--stroke); background:linear-gradient(180deg, rgba(77,182,255,.06), rgba(77,182,255,.03)); color:var(--brand); padding:10px 14px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .12s ease, background .2s ease; }
+        .download-all-btn:hover{transform:translateY(-1px); background:linear-gradient(180deg, rgba(77,182,255,.1), rgba(77,182,255,.06))}
+        .start-btn { appearance:none; border:1px solid var(--stroke); background:linear-gradient(180deg, var(--brand-2), var(--brand)); color:white; padding:10px 16px; border-radius:10px; font-weight:700; cursor:pointer; box-shadow:0 6px 18px rgba(77,182,255,.23); transition:transform .12s ease, box-shadow .2s ease; }
+        .start-btn:hover{transform:translateY(-1px); box-shadow:0 10px 24px rgba(77,182,255,.28)}
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>PSDocling <span style="font-size: 0.6em; font-weight: 300; color: #999;">v$version</span></h1>
-        <p style="margin: 5px 0; color: #b0b0b0; font-size: 1.1em;">PowerShell-based Document Processor</p>
-        <p>Backend Status: <span id="status">Connecting...</span></p>
-    </div>
+    <main class="container">
+        <!-- Header -->
+        <section class="header" role="banner" aria-label="PSDocling header">
+            <div class="header-row">
+                <div class="brand">
+                    <div class="logo" aria-hidden="true"></div>
+                    <div>
+                        <h1>PSDocling <span class="badge" aria-label="version">v$version</span></h1>
+                        <p class="subtitle">PowerShell-based Document Processor for Docling</p>
+                    </div>
+                </div>
+                <div class="row" aria-live="polite">
+                    <span class="status"><span class="status-dot" id="status-dot"></span>Backend Status: <span id="status">Connecting...</span></span>
+                </div>
+            </div>
+        </section>
 
-    <div class="upload-area" id="drop-zone">
-        <h3>Drop files here or click to browse</h3>
-        <button class="btn" onclick="document.getElementById('file-input').click()" style="margin: 20px 0;">Choose Files</button>
-        <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx,.pptx,.md,.html,.xhtml,.csv,.png,.jpg,.jpeg,.tiff,.bmp,.webp" style="display: none;">
+        <!-- Upload -->
+        <section class="card" aria-labelledby="upload-title">
+            <h2 class="card-title" id="upload-title">Upload</h2>
+            <div class="drop" id="drop-zone" tabindex="0" role="button" aria-label="Drop files here or press Enter to browse">
+                <div class="shimmer" aria-hidden="true"></div>
+                <h3>Drop files here or <span class="link" onclick="document.getElementById('file-input').click()">browse</span></h3>
+                <p class="muted">Max 100MB per file • Press <span class="kbd">Enter</span> to open file picker</p>
+                <button class="btn" style="margin-top:10px" onclick="document.getElementById('file-input').click()">Choose Files</button>
+                <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx,.pptx,.md,.html,.xhtml,.csv,.png,.jpg,.jpeg,.tiff,.bmp,.webp" class="sr-only" aria-hidden="true" />
+                <div style="margin-top:18px">
+                    <span class="pill">PDF</span>
+                    <span class="pill">DOCX</span>
+                    <span class="pill">XLSX</span>
+                    <span class="pill">PPTX</span>
+                    <span class="pill">MD</span>
+                    <span class="pill">HTML</span>
+                    <span class="pill">CSV</span>
+                    <span class="pill">Images</span>
+                </div>
+            </div>
 
-        <div style="margin: 25px 0 15px 0; text-align: center;">
-            <h4 style="margin: 0 0 8px 0; color: #049fd9; font-size: 1.1em; font-weight: bold;">Supported File Types</h4>
-            <p style="margin: 0; color: #b0b0b0; font-size: 0.95em;">PDF, DOCX, XLSX, PPTX, MD, HTML, XHTML, CSV, PNG, JPEG, TIFF, BMP, WEBP</p>
-        </div>
-    </div>
+            <div id="upload-progress" class="card" style="margin-top:14px; display:none">
+                <div class="row" style="justify-content:space-between">
+                    <p class="muted" style="margin:0">Uploading files…</p>
+                    <span class="chip">Transfer</span>
+                </div>
+                <div class="progress" style="margin-top:10px"><div class="progress-bar" id="progress-bar"></div></div>
+            </div>
+        </section>
 
-    <div id="upload-progress" class="hidden">
-        <p>Uploading files...</p>
-        <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
-    </div>
+        <!-- Stats -->
+        <section class="card" aria-labelledby="stats-title">
+            <h2 class="card-title" id="stats-title">Queue Overview</h2>
+            <div class="stats" role="list">
+                <div class="stat" role="listitem" aria-live="polite">
+                    <div class="value" id="queued">0</div>
+                    <div class="label">Queued</div>
+                </div>
+                <div class="stat" role="listitem" aria-live="polite">
+                    <div class="value" id="processing">0</div>
+                    <div class="label">Processing</div>
+                </div>
+                <div class="stat" role="listitem" aria-live="polite">
+                    <div class="value" id="completed">0</div>
+                    <div class="label">Completed</div>
+                </div>
+                <div class="stat" role="listitem" aria-live="polite">
+                    <div class="value" id="errors">0</div>
+                    <div class="label">Errors</div>
+                </div>
+            </div>
+        </section>
 
-    <div class="stats">
-        <div class="stat"><div class="stat-value" id="queued">0</div><div>Queued</div></div>
-        <div class="stat"><div class="stat-value" id="processing">0</div><div>Processing</div></div>
-        <div class="stat"><div class="stat-value" id="completed">0</div><div>Completed</div></div>
-        <div class="stat"><div class="stat-value" id="errors">0</div><div>Errors</div></div>
-    </div>
+        <!-- Processing Results -->
+        <section class="card" aria-labelledby="results-title" id="results">
+            <h2 class="card-title" id="results-title">Processing Results</h2>
+            <div id="results-list" class="results-list"></div>
+        </section>
 
-    <div class="results">
-        <h3>Processing Results</h3>
-        <div id="results-list"></div>
-    </div>
+        <!-- Processed Files -->
+        <section class="card" aria-labelledby="files-title">
+            <div class="row" style="justify-content:space-between">
+                <h2 class="card-title" id="files-title" style="margin:0">Processed Files</h2>
+                <button class="btn-ghost" onclick="downloadAllDocuments()">Download All</button>
+            </div>
+            <div id="files-list" style="margin-top:10px">
+                <p class="muted" style="font-style:italic">Loading processed files…</p>
+            </div>
+        </section>
+    </main>
 
-    <div class="results" style="margin-top: 25px;">
-        <h3>Processed Files</h3>
-        <div id="files-list">
-            <p style="color: #b0b0b0; font-style: italic;">Loading processed files...</p>
-        </div>
-    </div>
-
-    <!-- Error Details Modal -->
-    <div id="errorModal" class="modal">
-        <div class="modal-content">
+    <!-- Error Modal -->
+    <div id="errorModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="error-modal-title">
+        <div class="modal-card">
             <div class="modal-header">
-                <span class="close">&times;</span>
-                <h2>Error Details</h2>
+                <h2 class="card-title" id="error-modal-title" style="margin:0">Error Details</h2>
+                <span class="close" aria-label="Close error details" role="button">&times;</span>
             </div>
             <div id="errorModalContent">
-                <p>Loading error details...</p>
+                <p class="muted">Loading error details…</p>
             </div>
         </div>
     </div>
@@ -1781,6 +2149,16 @@ function New-FrontendFiles {
 
     document.addEventListener('DOMContentLoaded', function() {
         setupUpload();
+
+        // Keyboard support for drop zone
+        const zone = document.getElementById('drop-zone');
+        zone.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                document.getElementById('file-input').click();
+            }
+        });
+
         // Delay initial API calls to give server time to start
         setTimeout(async () => {
             const isHealthy = await checkHealth();
@@ -1788,8 +2166,9 @@ function New-FrontendFiles {
                 loadExistingDocuments();
                 loadProcessedFiles();
             }
-        }, 1000);
-        setInterval(loadProcessedFiles, 10000); // Refresh processed files every 10 seconds
+        }, 600);
+
+        setInterval(loadProcessedFiles, 2000);
         setInterval(updateStats, 2000);
     });
 
@@ -1797,9 +2176,18 @@ function New-FrontendFiles {
         const zone = document.getElementById('drop-zone');
         const input = document.getElementById('file-input');
 
-        zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.borderColor = '#007cba'; });
-        zone.addEventListener('dragleave', () => { zone.style.borderColor = '#ccc'; });
-        zone.addEventListener('drop', e => { e.preventDefault(); zone.style.borderColor = '#ccc'; handleFiles(e.dataTransfer.files); });
+        zone.addEventListener('dragover', e => {
+            e.preventDefault();
+            zone.style.borderColor = 'var(--brand)';
+        });
+        zone.addEventListener('dragleave', () => {
+            zone.style.borderColor = 'var(--stroke)';
+        });
+        zone.addEventListener('drop', e => {
+            e.preventDefault();
+            zone.style.borderColor = 'var(--stroke)';
+            handleFiles(e.dataTransfer.files);
+        });
         input.addEventListener('change', e => handleFiles(e.target.files));
     }
 
@@ -1807,11 +2195,19 @@ function New-FrontendFiles {
         const progress = document.getElementById('upload-progress');
         const bar = document.getElementById('progress-bar');
 
-        progress.classList.remove('hidden');
+        progress.style.display = 'block';
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             try {
+                // Check file size limit (100MB)
+                const maxSizeBytes = 100 * 1024 * 1024;  // 100MB
+                if (file.size > maxSizeBytes) {
+                    const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                    alert('File "' + file.name + '" (' + sizeMB + ' MB) exceeds the 100MB size limit. Please upload a smaller file.');
+                    continue;  // Skip this file
+                }
+
                 // Use FileReader for reliable base64 conversion
                 const base64 = await new Promise((resolve, reject) => {
                     const reader = new FileReader();
@@ -1857,7 +2253,7 @@ function New-FrontendFiles {
             bar.style.width = ((i + 1) / files.length * 100) + '%';
         }
 
-        setTimeout(() => { progress.classList.add('hidden'); bar.style.width = '0%'; }, 1000);
+        setTimeout(() => { progress.style.display = 'none'; bar.style.width = '0%'; }, 1000);
     }
 
     // Validate export format selection
@@ -1908,45 +2304,17 @@ function New-FrontendFiles {
         }
     }
 
-    // Apply model preset (NEW for v2.1.7)
+    // Apply model preset
     function applyModelPreset(id) {
         const preset = document.getElementById('chunkModelPreset-' + id).value;
         const modelPresets = {
-            'general': {
-                backend: 'hf',
-                model: 'sentence-transformers/all-MiniLM-L6-v2',
-                maxTokens: 512
-            },
-            'legal': {
-                backend: 'hf',
-                model: 'nlpaueb/legal-bert-base-uncased',
-                maxTokens: 512
-            },
-            'medical': {
-                backend: 'hf',
-                model: 'dmis-lab/biobert-v1.1',
-                maxTokens: 256
-            },
-            'financial': {
-                backend: 'hf',
-                model: 'yiyanghkust/finbert-tone',
-                maxTokens: 512
-            },
-            'scientific': {
-                backend: 'hf',
-                model: 'allenai/scibert_scivocab_uncased',
-                maxTokens: 256
-            },
-            'multilingual': {
-                backend: 'hf',
-                model: 'bert-base-multilingual-cased',
-                maxTokens: 400
-            },
-            'code': {
-                backend: 'hf',
-                model: 'microsoft/codebert-base',
-                maxTokens: 512
-            }
+            'general': { backend: 'hf', model: 'sentence-transformers/all-MiniLM-L6-v2', maxTokens: 512 },
+            'legal': { backend: 'hf', model: 'nlpaueb/legal-bert-base-uncased', maxTokens: 512 },
+            'medical': { backend: 'hf', model: 'dmis-lab/biobert-v1.1', maxTokens: 256 },
+            'financial': { backend: 'hf', model: 'yiyanghkust/finbert-tone', maxTokens: 512 },
+            'scientific': { backend: 'hf', model: 'allenai/scibert_scivocab_uncased', maxTokens: 256 },
+            'multilingual': { backend: 'hf', model: 'bert-base-multilingual-cased', maxTokens: 400 },
+            'code': { backend: 'hf', model: 'microsoft/codebert-base', maxTokens: 512 }
         };
 
         if (preset && modelPresets[preset]) {
@@ -1956,7 +2324,6 @@ function New-FrontendFiles {
             document.getElementById('chunkMaxTokens-' + id).value = config.maxTokens;
             toggleTokenizerOptions(id);
 
-            // Apply recommended settings for specific presets
             if (preset === 'code') {
                 document.getElementById('chunkPreserveCode-' + id).checked = true;
                 document.getElementById('chunkTableSerialization-' + id).value = 'markdown';
@@ -1984,8 +2351,16 @@ function New-FrontendFiles {
 
     function addResult(id, name, currentFormat = 'markdown') {
         const list = document.getElementById('results-list');
+
+        // Remove placeholder message if it exists
+        const placeholder = list.querySelector('p');
+        if (placeholder && placeholder.textContent.includes('No documents in processing')) {
+            placeholder.remove();
+        }
+
         const item = document.createElement('div');
         item.className = 'result-item';
+        item.id = 'result-item-' + id;
         item.innerHTML =
             '<div style="width: 100%;">' +
                 '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">' +
@@ -2054,9 +2429,8 @@ function New-FrontendFiles {
                                 '<span><strong>Enable Hybrid Chunking</strong></span>' +
                             '</label>' +
                             '<div id="chunkingDetails-' + id + '" style="display: none; padding-left: 20px; border-left: 2px solid #404040;">' +
-                                '<!-- Model Preset (NEW) -->' +
                                 '<div style="margin-bottom: 8px;">' +
-                                    '<label style="display: block; margin-bottom: 4px; color: #049fd9; font-size: 0.85em; font-weight: bold;">Model Preset (v2.1.7):</label>' +
+                                    '<label style="display: block; margin-bottom: 4px; color: #049fd9; font-size: 0.85em; font-weight: bold;">Model Preset:</label>' +
                                     '<select id="chunkModelPreset-' + id + '" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.9em;" onchange="applyModelPreset(\'' + id + '\')">' +
                                         '<option value="">Custom Configuration</option>' +
                                         '<option value="general" selected>General Purpose</option>' +
@@ -2087,7 +2461,6 @@ function New-FrontendFiles {
                                     '<label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 0.85em;">Max Tokens:</label>' +
                                     '<input type="number" id="chunkMaxTokens-' + id + '" value="512" min="50" max="8192" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.85em;">' +
                                 '</div>' +
-                                '<!-- Table Serialization (NEW) -->' +
                                 '<div style="margin-bottom: 8px;">' +
                                     '<label style="display: block; margin-bottom: 4px; color: #049fd9; font-size: 0.85em; font-weight: bold;">Table Format:</label>' +
                                     '<select id="chunkTableSerialization-' + id + '" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.9em;">' +
@@ -2097,7 +2470,6 @@ function New-FrontendFiles {
                                         '<option value="grid">ASCII Grid</option>' +
                                     '</select>' +
                                 '</div>' +
-                                '<!-- Picture Strategy (Enhanced) -->' +
                                 '<div style="margin-bottom: 8px;">' +
                                     '<label style="display: block; margin-bottom: 4px; color: #049fd9; font-size: 0.85em; font-weight: bold;">Picture Handling:</label>' +
                                     '<select id="chunkPictureStrategy-' + id + '" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.9em;">' +
@@ -2107,15 +2479,12 @@ function New-FrontendFiles {
                                         '<option value="placeholder">Custom Placeholder</option>' +
                                     '</select>' +
                                 '</div>' +
-                                '<!-- Image Placeholder (NEW) -->' +
                                 '<div id="imagePlaceholderDiv-' + id + '" style="margin-bottom: 8px; display: none;">' +
                                     '<label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 0.85em;">Image Placeholder Text:</label>' +
                                     '<input type="text" id="chunkImagePlaceholder-' + id + '" value="[IMAGE]" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.85em;">' +
                                 '</div>' +
-                                '<!-- Advanced Options (NEW) -->' +
                                 '<div style="border-top: 1px solid #404040; margin-top: 10px; padding-top: 10px;">' +
                                     '<label style="display: block; margin-bottom: 6px; color: #049fd9; font-size: 0.85em; font-weight: bold;">Advanced Options:</label>' +
-                                    '<!-- Overlap Tokens (NEW) -->' +
                                     '<div style="margin-bottom: 8px;">' +
                                         '<label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 0.85em;">Overlap Tokens (0 = disabled):</label>' +
                                         '<input type="number" id="chunkOverlapTokens-' + id + '" value="0" min="0" max="1000" style="width: 100%; padding: 4px; background: #1a1a1a; color: white; border: 1px solid #404040; border-radius: 4px; font-size: 0.85em;">' +
@@ -2128,7 +2497,6 @@ function New-FrontendFiles {
                                         '<input type="checkbox" id="chunkIncludeContext-' + id + '" style="margin: 0;">' +
                                         '<span>Include Contextualized Text</span>' +
                                     '</label>' +
-                                    '<!-- Boundary Preservation (NEW) -->' +
                                     '<label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px; font-size: 0.85em;">' +
                                         '<input type="checkbox" id="chunkPreserveSentences-' + id + '" style="margin: 0;">' +
                                         '<span>Preserve Sentence Boundaries</span>' +
@@ -2143,43 +2511,33 @@ function New-FrontendFiles {
                     '</div>' +
                 '</div>' +
                 '<div style="display: flex; justify-content: space-between; align-items: center;">' +
-                    '<div>' +
+                    '<div id="download-buttons-' + id + '" style="display:none;">' +
+                        '<button class="download-btn" onclick="downloadDocument(\'" + id + "\')" style="margin-right: 10px;">Download</button>' +
+                    '</div>' +
+                    '<div style="display: flex; gap: 8px;">' +
                         '<button class="start-btn" onclick="startConversion(\'' + id + '\')" id="start-' + id + '" disabled>Start Conversion</button>' +
                         '<button class="reprocess-btn" onclick="reprocessDocument(\'' + id + '\')" style="display:none" id="reprocess-' + id + '">Re-process</button>' +
                     '</div>' +
-                    '<a id="link-' + id + '" href="#" style="display:none">Download</a>' +
                 '</div>' +
             '</div>';
         list.appendChild(item);
         results[id] = { name: name, format: currentFormat };
 
-        // Initialize validation for the new item
         validateExportFormat(id);
     }
 
-    // Start conversion for a ready document
     async function startConversion(id) {
-        // Get selected format from radio buttons
         const radioButtons = document.querySelectorAll('input[name="format-' + id + '"]');
         let selectedFormat = null;
-        radioButtons.forEach(radio => {
-            if (radio.checked) selectedFormat = radio.value;
-        });
+        radioButtons.forEach(radio => { if (radio.checked) selectedFormat = radio.value; });
+        if (!selectedFormat) { alert('Please select an export format'); return; }
 
-        if (!selectedFormat) {
-            alert('Please select an export format');
-            return;
-        }
-        const embedImagesCheckbox = document.getElementById('embedImages-' + id);
-        const embedImages = embedImagesCheckbox.checked;
-
-        // Get enrichment options
+        const embedImages = document.getElementById('embedImages-' + id).checked;
         const enrichCode = document.getElementById('enrichCode-' + id).checked;
         const enrichFormula = document.getElementById('enrichFormula-' + id).checked;
         const enrichPictureClasses = document.getElementById('enrichPictureClasses-' + id).checked;
         const enrichPictureDescription = document.getElementById('enrichPictureDescription-' + id).checked;
 
-        // Get chunking options
         const enableChunking = document.getElementById('enableChunking-' + id).checked;
         let chunkingParams = {};
         if (enableChunking) {
@@ -2191,7 +2549,6 @@ function New-FrontendFiles {
                 chunkMergePeers: document.getElementById('chunkMergePeers-' + id).checked,
                 chunkIncludeContext: document.getElementById('chunkIncludeContext-' + id).checked
             };
-
             if (backend === 'hf') {
                 chunkingParams.chunkTokenizerModel = document.getElementById('chunkTokenizerModel-' + id).value;
             } else {
@@ -2203,7 +2560,6 @@ function New-FrontendFiles {
         const startBtn = document.getElementById('start-' + id);
 
         try {
-            // Hide start button and update status
             startBtn.style.display = 'none';
             statusElement.textContent = 'Queued...';
             statusElement.className = 'status-queued';
@@ -2214,26 +2570,18 @@ function New-FrontendFiles {
                 body: JSON.stringify({
                     documentId: id,
                     exportFormat: selectedFormat,
-                    embedImages: embedImages,
-                    enrichCode: enrichCode,
-                    enrichFormula: enrichFormula,
-                    enrichPictureClasses: enrichPictureClasses,
-                    enrichPictureDescription: enrichPictureDescription,
+                    embedImages,
+                    enrichCode,
+                    enrichFormula,
+                    enrichPictureClasses,
+                    enrichPictureDescription,
                     ...chunkingParams
                 })
             });
 
             if (response.ok) {
-                const result = await response.json();
-
-                // Update the stored format
-                if (results[id] && typeof results[id] === 'object') {
-                    results[id].format = selectedFormat;
-                } else {
-                    results[id] = { name: results[id] || 'Unknown', format: selectedFormat };
-                }
-
-                // Start polling for completion (with immediate first check for fast documents)
+                if (results[id] && typeof results[id] === 'object') { results[id].format = selectedFormat; }
+                else { results[id] = { name: results[id] || 'Unknown', format: selectedFormat }; }
                 setTimeout(() => pollResult(id, results[id].name || 'Unknown'), 500);
             } else {
                 throw new Error('Failed to start conversion');
@@ -2242,34 +2590,23 @@ function New-FrontendFiles {
             statusElement.textContent = 'Error (click for details)';
             statusElement.className = 'status-error';
             statusElement.onclick = () => showErrorDetails(id, results[id].name || 'Unknown');
-            startBtn.style.display = 'inline'; // Show start button again
+            startBtn.style.display = 'inline';
             console.error('Start conversion error:', error);
         }
     }
 
-    // Re-process document with new format
     async function reprocessDocument(id) {
-        // Get selected format from radio buttons
         const radioButtons = document.querySelectorAll('input[name="format-' + id + '"]');
         let newFormat = null;
-        radioButtons.forEach(radio => {
-            if (radio.checked) newFormat = radio.value;
-        });
+        radioButtons.forEach(radio => { if (radio.checked) newFormat = radio.value; });
+        if (!newFormat) { alert('Please select an export format'); return; }
 
-        if (!newFormat) {
-            alert('Please select an export format');
-            return;
-        }
-        const embedImagesCheckbox = document.getElementById('embedImages-' + id);
-        const embedImages = embedImagesCheckbox.checked;
-
-        // Get enrichment options
+        const embedImages = document.getElementById('embedImages-' + id).checked;
         const enrichCode = document.getElementById('enrichCode-' + id).checked;
         const enrichFormula = document.getElementById('enrichFormula-' + id).checked;
         const enrichPictureClasses = document.getElementById('enrichPictureClasses-' + id).checked;
         const enrichPictureDescription = document.getElementById('enrichPictureDescription-' + id).checked;
 
-        // Get chunking options
         const enableChunking = document.getElementById('enableChunking-' + id).checked;
         let chunkingParams = {};
         if (enableChunking) {
@@ -2281,7 +2618,6 @@ function New-FrontendFiles {
                 chunkMergePeers: document.getElementById('chunkMergePeers-' + id).checked,
                 chunkIncludeContext: document.getElementById('chunkIncludeContext-' + id).checked
             };
-
             if (backend === 'hf') {
                 chunkingParams.chunkTokenizerModel = document.getElementById('chunkTokenizerModel-' + id).value;
             } else {
@@ -2293,7 +2629,6 @@ function New-FrontendFiles {
         const reprocessBtn = document.getElementById('reprocess-' + id);
 
         try {
-            // Hide reprocess button and update status
             reprocessBtn.style.display = 'none';
             statusElement.textContent = 'Re-processing...';
             statusElement.className = 'status-processing';
@@ -2304,26 +2639,18 @@ function New-FrontendFiles {
                 body: JSON.stringify({
                     documentId: id,
                     exportFormat: newFormat,
-                    embedImages: embedImages,
-                    enrichCode: enrichCode,
-                    enrichFormula: enrichFormula,
-                    enrichPictureClasses: enrichPictureClasses,
-                    enrichPictureDescription: enrichPictureDescription,
+                    embedImages,
+                    enrichCode,
+                    enrichFormula,
+                    enrichPictureClasses,
+                    enrichPictureDescription,
                     ...chunkingParams
                 })
             });
 
             if (response.ok) {
-                const result = await response.json();
-
-                // Update the stored format
-                if (results[id] && typeof results[id] === 'object') {
-                    results[id].format = newFormat;
-                } else {
-                    results[id] = { name: results[id] || 'Unknown', format: newFormat };
-                }
-
-                // Start polling for completion (with immediate first check for fast documents)
+                if (results[id] && typeof results[id] === 'object') { results[id].format = newFormat; }
+                else { results[id] = { name: results[id] || 'Unknown', format: newFormat }; }
                 setTimeout(() => pollResult(id, results[id].name || 'Unknown'), 500);
             } else {
                 throw new Error('Failed to reprocess document');
@@ -2336,57 +2663,33 @@ function New-FrontendFiles {
         }
     }
 
-    // Error modal functions
     function showErrorDetails(id, fileName) {
         const modal = document.getElementById('errorModal');
         const content = document.getElementById('errorModalContent');
 
         content.innerHTML = '<p>Loading error details...</p>';
         modal.style.display = 'block';
+        modal.classList.add('show');
 
         fetch(API + '/api/error/' + id)
-            .then(response => {
-                console.log('Error API response status:', response.status);
-                if (response.ok) {
-                    return response.json();
-                } else {
-                    return response.text().then(text => {
-                        console.log('Error API response text:', text);
-                        throw new Error('HTTP ' + response.status + ': ' + text);
-                    });
-                }
-            })
-            .then(errorData => {
-                console.log('Error data received:', errorData);
-                content.innerHTML = formatErrorDetails(errorData);
-            })
-            .catch(error => {
-                console.error('Error loading error details:', error);
-                content.innerHTML = '<p style="color: #ef4444;">Failed to load error details: ' + error.message + '</p>';
-            });
+            .then(response => response.ok ? response.json() : response.text().then(t => { throw new Error('HTTP ' + response.status + ': ' + t); }))
+            .then(errorData => { content.innerHTML = formatErrorDetails(errorData); })
+            .catch(error => { content.innerHTML = '<p style="color: #ef4444;">Failed to load error details: ' + error.message + '</p>'; });
     }
 
     function formatEstimatedTime(estimatedDurationMs, elapsedTimeMs) {
         if (!estimatedDurationMs || !elapsedTimeMs) return '';
-
         const remainingMs = Math.max(0, estimatedDurationMs - elapsedTimeMs);
         const remainingSeconds = Math.round(remainingMs / 1000);
-
         if (remainingSeconds <= 0) return 'finishing...';
         if (remainingSeconds < 60) return remainingSeconds + 's remaining';
-
         const remainingMinutes = Math.floor(remainingSeconds / 60);
         const seconds = remainingSeconds % 60;
-
-        if (remainingMinutes < 60) {
-            return seconds > 0 ? remainingMinutes + 'm ' + seconds + 's remaining' : remainingMinutes + 'm remaining';
-        }
-
+        if (remainingMinutes < 60) { return seconds > 0 ? remainingMinutes + 'm ' + seconds + 's remaining' : remainingMinutes + 'm remaining'; }
         const hours = Math.floor(remainingMinutes / 60);
         const minutes = remainingMinutes % 60;
         return minutes > 0 ? hours + 'h ' + minutes + 'm remaining' : hours + 'h remaining';
     }
-
 
     function formatErrorDetails(errorData) {
         let html = '<div class="error-section">';
@@ -2395,82 +2698,55 @@ function New-FrontendFiles {
         html += '<p><strong>Document ID:</strong> ' + errorData.id + '</p>';
         html += '<p><strong>Queued:</strong> ' + (errorData.queuedTime?.DateTime || errorData.queuedTime || 'Unknown') + '</p>';
 
-        // Check if this is status information or error details
         if (errorData.currentStatus && errorData.currentStatus !== 'Error') {
-            // This is status information, not error details
             html += '<p><strong>Current Status:</strong> ' + errorData.currentStatus + '</p>';
-            if (errorData.startTime) {
-                html += '<p><strong>Started:</strong> ' + (errorData.startTime?.DateTime || errorData.startTime || 'Unknown') + '</p>';
-            }
-            if (errorData.progress !== undefined) {
-                html += '<p><strong>Progress:</strong> ' + errorData.progress + '%</p>';
-            }
-            html += '</div>';
-
-            html += '<div class="error-section">';
+            if (errorData.startTime) { html += '<p><strong>Started:</strong> ' + (errorData.startTime?.DateTime || errorData.startTime || 'Unknown') + '</p>'; }
+            if (errorData.progress !== undefined) { html += '<p><strong>Progress:</strong> ' + errorData.progress + '%</p>'; }
+            html += '</div><div class="error-section">';
             html += '<h3>Status Information</h3>';
             html += '<div class="error-code" style="background: #1a2e1a; border-left: 4px solid #10b981;">' + (errorData.message || 'Document is being processed') + '</div>';
             html += '</div>';
         } else {
-            // This is actual error details
-            html += '<p><strong>Failed:</strong> ' + (errorData.endTime?.DateTime || errorData.endTime || 'Unknown') + '</p>';
-            html += '</div>';
-
-            html += '<div class="error-section">';
-            html += '<h3>Error Message</h3>';
-            html += '<div class="error-code">' + (errorData.error || 'No error message available') + '</div>';
-            html += '</div>';
+            html += '<p><strong>Failed:</strong> ' + (errorData.endTime?.DateTime || errorData.endTime || 'Unknown') + '</p></div>';
+            html += '<div class="error-section"><h3>Error Message</h3><div class="error-code">' + (errorData.error || 'No error message available') + '</div></div>';
         }
 
         if (errorData.stderr && typeof errorData.stderr === 'string' && errorData.stderr.trim()) {
-            html += '<div class="error-section">';
-            html += '<h3>Python Error Output (stderr)</h3>';
-            html += '<div class="error-code">' + errorData.stderr + '</div>';
-            html += '</div>';
+            html += '<div class="error-section"><h3>Python Error Output (stderr)</h3><div class="error-code">' + errorData.stderr + '</div></div>';
         }
 
         if (errorData.errorDetails) {
-            html += '<div class="error-section">';
-            html += '<h3>Technical Details</h3>';
-
-            if (errorData.errorDetails.ExceptionType) {
-                html += '<p><strong>Exception Type:</strong> ' + errorData.errorDetails.ExceptionType + '</p>';
-            }
-
-            if (errorData.errorDetails.InnerException) {
-                html += '<p><strong>Inner Exception:</strong> ' + errorData.errorDetails.InnerException + '</p>';
-            }
-
-            if (errorData.errorDetails.StackTrace) {
-                html += '<h4>Stack Trace:</h4>';
-                html += '<div class="error-code">' + errorData.errorDetails.StackTrace + '</div>';
-            }
-
-            if (errorData.errorDetails.ScriptStackTrace) {
-                html += '<h4>Script Stack Trace:</h4>';
-                html += '<div class="error-code">' + errorData.errorDetails.ScriptStackTrace + '</div>';
-            }
-
+            html += '<div class="error-section"><h3>Technical Details</h3>';
+            if (errorData.errorDetails.ExceptionType) { html += '<p><strong>Exception Type:</strong> ' + errorData.errorDetails.ExceptionType + '</p>'; }
+            if (errorData.errorDetails.InnerException) { html += '<p><strong>Inner Exception:</strong> ' + errorData.errorDetails.InnerException + '</p>'; }
+            if (errorData.errorDetails.StackTrace) { html += '<h4>Stack Trace:</h4><div class="error-code">' + errorData.errorDetails.StackTrace + '</div>'; }
+            if (errorData.errorDetails.ScriptStackTrace) { html += '<h4>Script Stack Trace:</h4><div class="error-code">' + errorData.errorDetails.ScriptStackTrace + '</div>'; }
             html += '</div>';
         }
-
         return html;
     }
 
-    // Setup modal close functionality
+    // Modal close / keyboard support
     document.addEventListener('DOMContentLoaded', function() {
         const modal = document.getElementById('errorModal');
         const closeBtn = document.querySelector('.close');
 
         closeBtn.onclick = function() {
             modal.style.display = 'none';
+            modal.classList.remove('show', 'in');
         }
-
         window.onclick = function(event) {
             if (event.target === modal) {
                 modal.style.display = 'none';
+                modal.classList.remove('show', 'in');
             }
         }
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && (modal.classList.contains('show') || modal.classList.contains('in') || modal.style.display === 'flex')) {
+                modal.style.display = 'none';
+                modal.classList.remove('show', 'in');
+            }
+        });
     });
 
     async function pollResult(id, name, attempt = 0) {
@@ -2483,30 +2759,22 @@ function New-FrontendFiles {
                 document.getElementById('status-' + id).textContent = 'Completed';
                 const link = document.getElementById('link-' + id);
 
-                // For large files (>5MB) or JSON files >1MB, use download instead of blob URL
                 if ((contentLength && parseInt(contentLength) > 5 * 1024 * 1024) ||
                     (blob.type.includes('json') && blob.size > 1 * 1024 * 1024)) {
-                    // Use download link instead of blob URL to avoid browser memory issues
                     link.href = API + '/api/result/' + id;
                     link.download = name + '.' + (blob.type.includes('json') ? 'json' : 'md');
-                    link.textContent = 'Download (' + (blob.size / (1024 * 1024)).toFixed(1) + ' MB)';
+                    link.textContent = 'View File (' + (blob.size / (1024 * 1024)).toFixed(1) + ' MB)';
                 } else {
                     const url = URL.createObjectURL(blob);
                     link.href = url;
                 }
 
-                link.style.display = 'inline';
-
-                // Refresh the Processed Files section immediately when document completes
+                document.getElementById('download-buttons-' + id).style.display = 'inline';
                 loadProcessedFiles();
-
-                // Force an immediate page refresh to ensure all updates are reflected
-                window.location.reload();
-
+                updateStats();
                 return;
             }
             if (response.status === 202) {
-                // Check if we can get updated status with progress
                 try {
                     const documentsResponse = await fetch(API + '/api/documents');
                     if (documentsResponse.ok) {
@@ -2515,39 +2783,67 @@ function New-FrontendFiles {
                         if (doc && doc.status === 'Processing') {
                             const statusElement = document.getElementById('status-' + id);
                             let progressText = 'Processing...';
-                            if (doc.progress !== undefined && doc.progress !== null) {
-                                progressText = 'Processing ' + doc.progress + '%';
+                            let elapsedText = '';
+
+                            if (doc.elapsedTime) {
+                                const elapsedMs = doc.elapsedTime;
+                                const elapsedSeconds = Math.floor(elapsedMs / 1000);
+                                const hours = Math.floor(elapsedSeconds / 3600);
+                                const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+                                const seconds = elapsedSeconds % 60;
+                                if (hours > 0) { elapsedText = hours + 'h ' + minutes + 'm'; }
+                                else if (minutes > 0) { elapsedText = minutes + 'm ' + seconds + 's'; }
+                                else { elapsedText = seconds + 's'; }
                             }
 
-                            statusElement.innerHTML = '<div class="progress-container">' +
-                                '<div class="progress-wheel"></div>' +
-                                '<span>' + progressText + '</span>' +
-                            '</div>';
+                            if (doc.enhancementsInProgress && doc.activeEnhancements && doc.activeEnhancements.length > 0) {
+                                const enhancement = doc.activeEnhancements[0];
+                                progressText = 'Processing (' + enhancement + ')';
+                                if (doc.progress !== undefined && doc.progress !== null) {
+                                    progressText = 'Processing (' + enhancement + ') ' + doc.progress + '%';
+                                }
+                            } else if (doc.progress !== undefined && doc.progress !== null) {
+                                progressText = 'Processing ' + doc.progress + '%';
+                            }
+                            if (elapsedText) { progressText += ' - ' + elapsedText + ' elapsed'; }
+                            if (doc.elapsedTime && doc.elapsedTime > 900000) {
+                                progressText += '<br><span style="font-size: 0.85em; color: #fbbf24;">Still processing, please be patient...</span>';
+                            }
+
+                            statusElement.innerHTML = '<div class="progress-container"><div class="progress-wheel"></div><span>' + progressText + '</span></div>';
+
+                            const linkElement = document.getElementById('link-' + id);
+                            if (doc.elapsedTime && doc.elapsedTime > 300000) {
+                                if (!document.getElementById('cancel-' + id)) {
+                                    const cancelBtn = document.createElement('button');
+                                    cancelBtn.id = 'cancel-' + id;
+                                    cancelBtn.textContent = 'Cancel';
+                                    cancelBtn.style = 'padding: 4px 8px; margin-left: 8px; background: #dc2626; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;';
+                                    cancelBtn.onclick = () => cancelProcessing(id, name);
+                                    linkElement?.parentNode?.insertBefore(cancelBtn, linkElement);
+                                }
+                            }
                         }
                     }
                 } catch (e) {
-                    // Fallback to simple text if API call fails
                     document.getElementById('status-' + id).textContent = 'Processing...';
                 }
                 setTimeout(() => pollResult(id, name, attempt + 1), 1000);
                 return;
             }
 
-            // Before marking as error, check if document is actually in error state
             try {
                 const documentsResponse = await fetch(API + '/api/documents');
                 if (documentsResponse.ok) {
                     const documents = await documentsResponse.json();
                     const doc = documents.find(d => d.id === id);
                     if (doc && doc.status === 'Error') {
-                        // Document is actually in error state
                         const statusElement = document.getElementById('status-' + id);
                         statusElement.textContent = 'Error (click for details)';
                         statusElement.className = 'status-error';
                         statusElement.onclick = () => showErrorDetails(id, name);
                         return;
                     } else if (doc) {
-                        // Document is not in error state, continue polling
                         setTimeout(() => pollResult(id, name, attempt + 1), 2000);
                         return;
                     }
@@ -2556,23 +2852,20 @@ function New-FrontendFiles {
                 console.log('Failed to check document status:', docError);
             }
 
-            // Fallback: mark as connection error but continue trying
             const statusElement = document.getElementById('status-' + id);
             statusElement.textContent = 'Connection Error - Retrying...';
             statusElement.className = 'status-error';
-            statusElement.onclick = null; // Don't show error details for connection errors
+            statusElement.onclick = null;
         } catch (error) {
             if (attempt < 30) {
                 setTimeout(() => pollResult(id, name, attempt + 1), 2000);
             } else {
-                // After many retries, check if document is actually in error state
                 try {
                     const documentsResponse = await fetch(API + '/api/documents');
                     if (documentsResponse.ok) {
                         const documents = await documentsResponse.json();
                         const doc = documents.find(d => d.id === id);
                         if (doc && doc.status === 'Error') {
-                            // Document is actually in error state
                             const statusElement = document.getElementById('status-' + id);
                             statusElement.textContent = 'Error (click for details)';
                             statusElement.className = 'status-error';
@@ -2583,12 +2876,10 @@ function New-FrontendFiles {
                 } catch (docError) {
                     console.log('Failed to check document status after retries:', docError);
                 }
-
-                // Final fallback: assume connection issues
                 const statusElement = document.getElementById('status-' + id);
                 statusElement.textContent = 'Connection Lost';
                 statusElement.className = 'status-error';
-                statusElement.onclick = null; // Don't show error details for connection errors
+                statusElement.onclick = null;
             }
         }
     }
@@ -2604,12 +2895,10 @@ function New-FrontendFiles {
                 document.getElementById('errors').textContent = stats.ErrorCount || 0;
             } else {
                 console.error('Stats update failed with status:', response.status);
-                // Try to reconnect if stats fail
                 setTimeout(() => checkHealth(1), 1000);
             }
         } catch (error) {
             console.error('Stats update failed:', error);
-            // Try to reconnect if stats fail
             setTimeout(() => checkHealth(1), 1000);
         }
     }
@@ -2620,77 +2909,47 @@ function New-FrontendFiles {
             if (response.ok) {
                 const documents = await response.json();
                 const list = document.getElementById('results-list');
-                list.innerHTML = ''; // Clear existing items
+                list.innerHTML = '';
 
                 documents.forEach(doc => {
-                    console.log('Processing doc in updateDisplay:', doc.id, doc.status);
-
-                    // Skip completed documents - they will be handled by loadCompletedDocuments
-                    if (doc.status === 'Completed') {
-                        return;
-                    }
-
+                    if (doc.status === 'Completed') { return; }
                     const docFormat = doc.exportFormat || 'markdown';
                     addResult(doc.id, doc.fileName, docFormat);
                     results[doc.id] = { name: doc.fileName, format: docFormat };
 
-                    // Set appropriate status and start polling if needed
                     const statusElement = document.getElementById('status-' + doc.id);
-
                     if (doc.status === 'Ready') {
                         statusElement.textContent = 'Ready';
                         statusElement.className = 'status-ready';
-                        statusElement.onclick = null; // Clear any existing error click handler
-                        // Show start button for ready items
+                        statusElement.onclick = null;
                         const startBtn = document.getElementById('start-' + doc.id);
-                        if (startBtn) {
-                            startBtn.style.display = 'inline';
-                        }
+                        if (startBtn) { startBtn.style.display = 'inline'; }
                     } else if (doc.status === 'Processing') {
-                        console.log('Processing document:', doc.id, 'with progress:', doc.progress);
-
-                        // Display progress percentage if available
                         let progressText = 'Processing...';
                         if (doc.progress !== undefined && doc.progress !== null) {
                             progressText = 'Processing ' + doc.progress + '%';
                         }
-
-                        statusElement.innerHTML = '<div class="progress-container">' +
-                            '<div class="progress-wheel"></div>' +
-                            '<span>' + progressText + '</span>' +
-                        '</div>';
+                        statusElement.innerHTML = '<div class="progress-container"><div class="progress-wheel"></div><span>' + progressText + '</span></div>';
                         statusElement.className = 'status-processing';
-                        statusElement.onclick = null; // Clear any existing error click handler
-
-                        // Hide start button during processing
+                        statusElement.onclick = null;
                         const startBtn = document.getElementById('start-' + doc.id);
-                        if (startBtn) {
-                            startBtn.style.display = 'none';
-                        }
+                        if (startBtn) { startBtn.style.display = 'none'; }
                         pollResult(doc.id, doc.fileName);
                     } else if (doc.status === 'Queued') {
                         statusElement.textContent = 'Queued...';
                         statusElement.className = 'status-queued';
-                        statusElement.onclick = null; // Clear any existing error click handler
-                        // Hide start button when queued
+                        statusElement.onclick = null;
                         const startBtn = document.getElementById('start-' + doc.id);
-                        if (startBtn) {
-                            startBtn.style.display = 'none';
-                        }
+                        if (startBtn) { startBtn.style.display = 'none'; }
                         pollResult(doc.id, doc.fileName);
                     } else if (doc.status === 'Error') {
                         statusElement.textContent = 'Error (click for details)';
                         statusElement.className = 'status-error';
                         statusElement.onclick = () => showErrorDetails(doc.id, doc.fileName);
-                        // Show start button again for retry
                         const startBtn = document.getElementById('start-' + doc.id);
-                        if (startBtn) {
-                            startBtn.style.display = 'inline';
-                        }
+                        if (startBtn) { startBtn.style.display = 'inline'; }
                     } else {
-                        // CATCH-ALL: Show any unknown status
-                        console.log('UNKNOWN STATUS:', doc.status);
-                        statusElement.innerHTML = '<span style=\"color: orange; font-weight: bold;\">STATUS: ' + (doc.status || 'UNDEFINED') + '</span>';
+                        statusElement.innerHTML = '<span style="color: orange; font-weight: bold;">STATUS: ' + (doc.status || 'UNDEFINED') + '</span>';
                     }
                 });
             }
@@ -2701,15 +2960,12 @@ function New-FrontendFiles {
 
     async function loadProcessedFiles() {
         try {
-            // Load both static files and completed documents
             const [filesResponse, documentsResponse] = await Promise.all([
                 fetch(API + '/api/files'),
                 fetch(API + '/api/documents')
             ]);
 
-            // If both calls failed, surface a connection message and bail early
             if (!filesResponse.ok && !documentsResponse.ok) {
-                console.error('Both /api/files and /api/documents failed.');
                 const filesList = document.getElementById('files-list');
                 filesList.innerHTML = '<p style="color: #fbbf24;">Server responded with an error. Checking connection...</p>';
                 setTimeout(() => checkHealth(1), 2000);
@@ -2717,95 +2973,104 @@ function New-FrontendFiles {
             }
 
             const allItems = [];
-
-            // Get documents for document ID mapping
             let documentsMap = new Map();
             if (documentsResponse.ok) {
                 const documents = await documentsResponse.json();
-                documents
-                    .filter(doc => doc.status === 'Completed')
-                    .forEach(doc => {
-                        documentsMap.set(doc.id, doc);
-                    });
+                documents.filter(doc => doc.status === 'Completed').forEach(doc => {
+                    documentsMap.set(doc.id, doc);
+                    // Clean up completed items from Processing Results section
+                    const resultItem = document.getElementById('result-item-' + doc.id);
+                    if (resultItem) {
+                        resultItem.style.transition = 'opacity 0.3s';
+                        resultItem.style.opacity = '0';
+                        setTimeout(() => {
+                            resultItem.remove();
+                            const resultsList = document.getElementById('results-list');
+                            if (resultsList && resultsList.children.length === 0) {
+                                resultsList.innerHTML = '<p style="color: #888; text-align: center; padding: 20px;">No documents in processing. Upload files above to get started.</p>';
+                            }
+                        }, 300);
+                    }
+                });
             }
 
-            // Add only generated files (output files, not original uploads)
+            const filesByDocId = new Map();
             if (filesResponse.ok) {
                 let files = await filesResponse.json();
                 if (!Array.isArray(files)) files = [files];
 
                 files.forEach(file => {
-                    // Only show generated files, not original uploaded files
-                    // Generated files have extensions like .md, .xml, .html, .json
-                    const isGeneratedFile = /\.(md|xml|html|json)$/i.test(file.fileName);
-
+                    const isGeneratedFile = /\.(md|xml|html|json|png|jpg|jpeg|gif|bmp|tiff|webp)$/i.test(file.fileName);
                     if (isGeneratedFile) {
-                        // Find corresponding document for re-process functionality
-                        const correspondingDoc = documentsMap.get(file.id);
-
-                        allItems.push({
-                            type: 'file',
-                            id: file.id,
-                            fileName: file.fileName,
-                            fileSize: file.fileSize,
-                            lastModified: file.lastModified,
-                            downloadUrl: file.downloadUrl,
-                            exportFormat: correspondingDoc ? correspondingDoc.exportFormat : 'unknown',
-                            canReprocess: !!correspondingDoc
-                        });
+                        if (!filesByDocId.has(file.id)) { filesByDocId.set(file.id, []); }
+                        filesByDocId.get(file.id).push(file);
                     }
                 });
             }
 
-            const filesList = document.getElementById('files-list');
+            filesByDocId.forEach((files, docId) => {
+                const correspondingDoc = documentsMap.get(docId);
+                allItems.push({
+                    type: 'document',
+                    id: docId,
+                    files: files,
+                    fileCount: files.length,
+                    lastModified: files[0].lastModified,
+                    totalSize: files.reduce((sum, f) => {
+                        const sizeNum = parseFloat(f.fileSize.replace(' KB', ''));
+                        return sum + sizeNum;
+                    }, 0),
+                    exportFormat: correspondingDoc ? correspondingDoc.exportFormat : 'unknown',
+                    canReprocess: !!correspondingDoc,
+                    originalFileName: correspondingDoc ? correspondingDoc.fileName : 'Unknown'
+                });
+            });
 
+            const filesList = document.getElementById('files-list');
             if (allItems.length === 0) {
                 filesList.innerHTML = '<p style="color: #b0b0b0; font-style: italic;">No processed files found.</p>';
                 return;
             }
 
             filesList.innerHTML = allItems.map(item => {
+                const escapedId = item.id.replace(/'/g, "\\'");
+                const escapedFileName = item.originalFileName.replace(/'/g, "\\'");
+                const fileListHtml = item.files.map(f =>
+                    '<li style="color: #b0b0b0; font-size: 0.9em;">' + f.fileName + ' (' + f.fileSize + ')</li>'
+                ).join('');
+
                 return '<div class="result-item">' +
-                    '<div>' +
-                    '<strong>' + item.fileName + '</strong><br>' +
+                    '<div style="flex: 1;">' +
+                    '<strong>' + item.originalFileName + '</strong><br>' +
                     '<small style="color: #b0b0b0;">' +
-                    'Size: ' + item.fileSize + ' | Modified: ' + item.lastModified +
+                    item.fileCount + ' file' + (item.fileCount > 1 ? 's' : '') + ' | ' +
+                    item.totalSize.toFixed(2) + ' KB total | Modified: ' + item.lastModified +
                     '</small>' +
+                    '<details style="margin-top: 8px;">' +
+                    '<summary style="cursor: pointer; color: #049fd9; font-size: 0.9em;">Show files</summary>' +
+                    '<ul style="margin: 8px 0 0 20px; padding: 0;">' + fileListHtml + '</ul>' +
+                    '</details>' +
                     '</div>' +
-                    '<div>' +
-                    '<a href="' + API + item.downloadUrl + '" target="_blank">Download</a>' +
-                    (item.canReprocess ?
-                        '<button class="reprocess-btn" onclick="reprocessFromCompleted(\'' + item.id + '\', \'' + item.fileName + '\')" style="margin-left: 8px;">Re-process</button>' :
-                        '') +
+                    '<div style="display: flex; gap: 8px; align-items: flex-start;">' +
+                    '<button onclick="downloadAllFilesForDocument(\'' + escapedId + '\', \'' + escapedFileName + '\')" style="padding: 6px 12px; background: #0073e6; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">Download</button>' +
+                    (item.canReprocess ? '<button class="reprocess-btn" onclick="reprocessFromCompleted(\'' + escapedId + '\', \'' + escapedFileName + '\')" style="white-space: nowrap;">Re-process</button>' : '') +
                     '</div>' +
                     '</div>';
             }).join('');
         } catch (error) {
             console.error('Failed to load processed files:', error);
-            document.getElementById('files-list').innerHTML =
-                '<p style="color: #fbbf24;">Connection lost. Attempting to reconnect...</p>';
+            document.getElementById('files-list').innerHTML = '<p style="color: #fbbf24;">Connection lost. Attempting to reconnect...</p>';
             setTimeout(() => checkHealth(1), 2000);
         }
     }
 
     async function checkHealth(retries = 3) {
         try {
-            // Create a timeout promise that rejects after 5 seconds
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Timeout')), 5000);
-            });
-
-            // Race the fetch against the timeout
-            const response = await Promise.race([
-                fetch(API + '/api/health'),
-                timeoutPromise
-            ]);
-
+            const timeoutPromise = new Promise((_, reject) => { setTimeout(() => reject(new Error('Timeout')), 5000); });
+            const response = await Promise.race([ fetch(API + '/api/health'), timeoutPromise ]);
             if (response.ok) {
-                const data = await response.json();
                 document.getElementById('status').textContent = 'Connected';
-                document.getElementById('status').style.color = '#00bceb'; // Cisco blue color
-                // If we just reconnected, refresh the processed files
+                document.getElementById('status').style.color = '#00bceb';
                 if (document.getElementById('files-list').innerHTML.includes('Connection lost') ||
                     document.getElementById('files-list').innerHTML.includes('Server responded with an error')) {
                     loadProcessedFiles();
@@ -2813,62 +3078,50 @@ function New-FrontendFiles {
                 return true;
             } else {
                 document.getElementById('status').textContent = 'Server Error';
-                document.getElementById('status').style.color = '#ef4444'; // Red color
+                document.getElementById('status').style.color = '#ef4444';
                 return false;
             }
         } catch (error) {
-            console.log('Health check error:', error.message);
             if (retries > 0) {
                 document.getElementById('status').textContent = 'Connecting...';
-                document.getElementById('status').style.color = '#fbbf24'; // Yellow color
+                document.getElementById('status').style.color = '#fbbf24';
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 return checkHealth(retries - 1);
             } else {
                 document.getElementById('status').textContent = 'Disconnected';
-                document.getElementById('status').style.color = '#ef4444'; // Red color
+                document.getElementById('status').style.color = '#ef4444';
                 return false;
             }
         }
     }
 
-    // Function to move a completed document back to Processing Results for re-processing
     async function reprocessFromCompleted(documentId, fileName) {
         try {
-            // Get the document details to restore it to Processing Results
             const documentsResponse = await fetch(API + '/api/documents');
             if (documentsResponse.ok) {
                 const documents = await documentsResponse.json();
                 const doc = documents.find(d => d.id === documentId);
-
                 if (doc) {
-                    // Add the document back to Processing Results with current settings
                     const docFormat = doc.exportFormat || 'markdown';
                     addResult(documentId, fileName, docFormat);
                     results[documentId] = { name: fileName, format: docFormat };
 
-                    // Set status to Ready so user can configure options
                     const statusElement = document.getElementById('status-' + documentId);
                     statusElement.textContent = 'Ready';
                     statusElement.className = 'status-ready';
                     statusElement.onclick = null;
 
-                    // Show start button
                     const startBtn = document.getElementById('start-' + documentId);
-                    if (startBtn) {
-                        startBtn.style.display = 'inline';
-                    }
+                    if (startBtn) { startBtn.style.display = 'inline'; }
 
-                    // Update the document status to Ready in the backend
                     await fetch(API + '/api/documents/' + documentId + '/reset', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ status: 'Ready' })
                     });
 
-                    // Refresh both sections to ensure proper display
                     loadProcessedFiles();
 
-                    // Scroll to the Processing Results section so user can see the document
                     const processingSection = document.getElementById('results');
                     if (processingSection) {
                         processingSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2883,6 +3136,117 @@ function New-FrontendFiles {
             alert('Error moving document back to Processing Results: ' + error.message);
         }
     }
+
+    async function downloadDocument(docId) {
+        try {
+            const response = await fetch(API + '/api/download/' + docId);
+            if (!response.ok) { throw new Error('Download failed'); }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = docId + '.zip';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Download failed:', error);
+            alert('Failed to download document. Please try again.');
+        }
+    }
+
+    async function cancelProcessing(id, name) {
+        if (!confirm('Are you sure you want to cancel processing "' + name + '"?')) { return; }
+        try {
+            const response = await fetch(API + '/api/cancel/' + id, { method: 'POST' });
+            if (response.ok) {
+                alert('Cancellation requested. The process will stop shortly.');
+                const statusElement = document.getElementById('status-' + id);
+                statusElement.textContent = 'Cancelling...';
+                statusElement.className = 'status-error';
+                const cancelBtn = document.getElementById('cancel-' + id);
+                if (cancelBtn) { cancelBtn.remove(); }
+                updateStats();
+            } else {
+                const error = await response.json();
+                alert('Failed to cancel: ' + (error.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Cancel error:', error);
+            alert('Failed to cancel processing. Please try again.');
+        }
+    }
+
+    async function downloadAllFilesForDocument(docId, originalFileName) {
+        try {
+            const response = await fetch(API + '/api/download/' + docId);
+            if (!response.ok) { throw new Error('Download failed'); }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            // Use original filename without extension, add .zip
+            const baseFileName = originalFileName.replace(/\.[^/.]+$/, '');
+            a.download = baseFileName + '.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Download all files failed:', error);
+            alert('Failed to download files: ' + error.message);
+        }
+    }
+
+    async function downloadSingleFile(downloadUrl, fileName) {
+        const downloadPath = downloadUrl.startsWith('/') ? downloadUrl : '/' + downloadUrl;
+        const response = await fetch(API + downloadPath);
+        if (!response.ok) { throw new Error('Download failed for ' + fileName + ' with status ' + response.status); }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function downloadProcessedFile(downloadUrl, fileName) {
+        try {
+            const downloadPath = downloadUrl.startsWith('/') ? downloadUrl : '/' + downloadUrl;
+            const response = await fetch(API + downloadPath);
+            if (!response.ok) { throw new Error('Download failed with status ' + response.status); }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = fileName;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Download failed:', error);
+            alert('Failed to download file: ' + error.message);
+        }
+    }
+
+    async function downloadAllDocuments() {
+        try {
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = 'Preparing...'; btn.disabled = true;
+
+            const response = await fetch(API + '/api/download-all');
+            if (!response.ok) { throw new Error('Download failed'); }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url;
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            a.download = 'PSDocling_Export_' + timestamp + '.zip';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            btn.textContent = originalText; btn.disabled = false;
+        } catch (error) {
+            console.error('Download all failed:', error);
+            alert('Failed to download all documents. Please try again.');
+            if (event && event.target) { event.target.textContent = 'Download All'; event.target.disabled = false; }
+        }
+    }
     </script>
 </body>
 </html>
@@ -2890,39 +3254,78 @@ function New-FrontendFiles {
 
     $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding UTF8
 
-    # Web server script
+    # Smarter web server (serves correct MIME types, basic cache headers, 404 handling)
     $webServer = @'
 param([int]$Port = 8081)
 
 $http = New-Object System.Net.HttpListener
-$http.Prefixes.Add("http://localhost:$Port/")
+$prefix = "http://localhost:$Port/"
+$http.Prefixes.Add($prefix)
 $http.Start()
 
-Write-Host "Web server running at http://localhost:$Port" -ForegroundColor Green
+Write-Host "Web server running at $prefix" -ForegroundColor Green
+
+# Simple mime map
+$MimeMap = @{
+  ".html" = "text/html; charset=utf-8"
+  ".htm"  = "text/html; charset=utf-8"
+  ".css"  = "text/css; charset=utf-8"
+  ".js"   = "application/javascript; charset=utf-8"
+  ".json" = "application/json; charset=utf-8"
+  ".svg"  = "image/svg+xml"
+  ".png"  = "image/png"
+  ".jpg"  = "image/jpeg"
+  ".jpeg" = "image/jpeg"
+  ".gif"  = "image/gif"
+  ".webp" = "image/webp"
+  ".ico"  = "image/x-icon"
+  ".txt"  = "text/plain; charset=utf-8"
+  ".map"  = "application/json; charset=utf-8"
+  ".xml"  = "application/xml; charset=utf-8"
+}
 
 try {
-    while ($http.IsListening) {
-        $context = $http.GetContext()
-        $response = $context.Response
+  while ($http.IsListening) {
+    $context = $http.GetContext()
+    $response = $context.Response
+    $request  = $context.Request
 
-        $path = $context.Request.Url.LocalPath
-        if ($path -eq "/") { $path = "/index.html" }
+    $path = $request.Url.LocalPath
+    if ($path -eq "/" -or [string]::IsNullOrEmpty($path)) { $path = "/index.html" }
 
-        $filePath = Join-Path $PSScriptRoot $path.TrimStart('/')
+    $filePath = Join-Path $PSScriptRoot $path.TrimStart('/')
 
-        if (Test-Path $filePath) {
-            $content = [System.IO.File]::ReadAllBytes($filePath)
-            $response.ContentType = "text/html"
-            $response.ContentLength64 = $content.Length
-            $response.OutputStream.Write($content, 0, $content.Length)
-        } else {
-            $response.StatusCode = 404
-        }
-
-        $response.Close()
+    if (Test-Path $filePath) {
+      try {
+        $bytes = [System.IO.File]::ReadAllBytes($filePath)
+        $ext = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
+        $contentType = $MimeMap[$ext]
+        if (-not $contentType) { $contentType = "application/octet-stream" }
+        $response.ContentType = $contentType
+        # Basic cache headers for static content
+        $response.AddHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        $response.AddHeader("Pragma", "no-cache")
+        $response.AddHeader("Expires", "0")
+        $response.ContentLength64 = $bytes.Length
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+      } catch {
+        $response.StatusCode = 500
+        $msg = [System.Text.Encoding]::UTF8.GetBytes("Internal server error: $($_.Exception.Message)")
+        $response.OutputStream.Write($msg, 0, $msg.Length)
+      }
+    } else {
+      $response.StatusCode = 404
+      $body = "<!doctype html><meta charset=`"utf-8`"><title>404</title><body style='font-family:Segoe UI,Roboto,Arial; padding:24px'><h1>404 Not Found</h1><p>$([System.Web.HttpUtility]::HtmlEncode($path))</p></body>"
+      $msg = [System.Text.Encoding]::UTF8.GetBytes($body)
+      $response.ContentType = "text/html; charset=utf-8"
+      $response.ContentLength64 = $msg.Length
+      $response.OutputStream.Write($msg, 0, $msg.Length)
     }
+
+    $response.Close()
+  }
 } finally {
-    $http.Stop()
+  $http.Stop()
 }
 '@
 
@@ -3011,6 +3414,24 @@ function Start-APIServer {
                                 $doc.enrichPictureClasses = if ($_.Value.EnrichPictureClasses) { [bool]$_.Value.EnrichPictureClasses } else { $false }
                                 $doc.enrichPictureDescription = if ($_.Value.EnrichPictureDescription) { [bool]$_.Value.EnrichPictureDescription } else { $false }
 
+                                # Add chunking options with defaults
+                                $doc.enableChunking = if ($_.Value.EnableChunking) { [bool]$_.Value.EnableChunking } else { $false }
+                                if ($doc.enableChunking) {
+                                    $doc.chunkTokenizerBackend = if ($_.Value.ChunkTokenizerBackend) { $_.Value.ChunkTokenizerBackend } else { 'hf' }
+                                    $doc.chunkTokenizerModel = if ($_.Value.ChunkTokenizerModel) { $_.Value.ChunkTokenizerModel } else { 'sentence-transformers/all-MiniLM-L6-v2' }
+                                    $doc.chunkOpenAIModel = if ($_.Value.ChunkOpenAIModel) { $_.Value.ChunkOpenAIModel } else { 'gpt-4o-mini' }
+                                    $doc.chunkMaxTokens = if ($_.Value.ChunkMaxTokens) { $_.Value.ChunkMaxTokens } else { 512 }
+                                    $doc.chunkMergePeers = if ($null -ne $_.Value.ChunkMergePeers) { [bool]$_.Value.ChunkMergePeers } else { $true }
+                                    $doc.chunkIncludeContext = if ($_.Value.ChunkIncludeContext) { [bool]$_.Value.ChunkIncludeContext } else { $false }
+                                    $doc.chunkTableSerialization = if ($_.Value.ChunkTableSerialization) { $_.Value.ChunkTableSerialization } else { 'triplets' }
+                                    $doc.chunkPictureStrategy = if ($_.Value.ChunkPictureStrategy) { $_.Value.ChunkPictureStrategy } else { 'default' }
+                                    $doc.chunkImagePlaceholder = if ($_.Value.ChunkImagePlaceholder) { $_.Value.ChunkImagePlaceholder } else { '[IMAGE]' }
+                                    $doc.chunkOverlapTokens = if ($_.Value.ChunkOverlapTokens) { $_.Value.ChunkOverlapTokens } else { 0 }
+                                    $doc.chunkPreserveSentences = if ($_.Value.ChunkPreserveSentences) { [bool]$_.Value.ChunkPreserveSentences } else { $false }
+                                    $doc.chunkPreserveCode = if ($_.Value.ChunkPreserveCode) { [bool]$_.Value.ChunkPreserveCode } else { $false }
+                                    $doc.chunkModelPreset = if ($_.Value.ChunkModelPreset) { $_.Value.ChunkModelPreset } else { '' }
+                                }
+
                                 # Add progress data if available
                                 if ($_.Value.Progress) { $doc.progress = $_.Value.Progress }
                                 if ($_.Value.EstimatedDuration) { $doc.estimatedDuration = $_.Value.EstimatedDuration }
@@ -3044,7 +3465,7 @@ function Start-APIServer {
                                 Get-ChildItem $processedDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                                     $docId = $_.Name
                                     try {
-                                        Get-ChildItem $_.FullName -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml') } | ForEach-Object {
+                                        Get-ChildItem $_.FullName -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp') } | ForEach-Object {
                                             $filePath = $_.FullName
                                             $fileName = $_.Name
                                             $fileSize = [math]::Round($_.Length / 1KB, 2)
@@ -3173,7 +3594,7 @@ function Start-APIServer {
                                 if ($requestedFile) {
                                     # Serve specific file with security validation
                                     try {
-                                        $secureFileName = Get-SecureFileName -FileName $requestedFile -AllowedExtensions @('.md', '.html', '.json', '.txt', '.xml')
+                                        $secureFileName = Get-SecureFileName -FileName $requestedFile -AllowedExtensions @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
                                         $filePath = Join-Path $docDir $secureFileName
 
                                         # Additional security check: ensure the resolved path is still within the document directory
@@ -3198,10 +3619,10 @@ function Start-APIServer {
                                 }
                                 else {
                                     # Fallback: serve first available file (for Processing Results)
-                                    $outputFile = Get-ChildItem $docDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml') } | Select-Object -First 1
+                                    $outputFile = Get-ChildItem $docDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp') } | Select-Object -First 1
                                 }
 
-                                if ($outputFile -and $outputFile.Extension -in @('.md', '.html', '.json', '.txt', '.xml')) {
+                                if ($outputFile -and $outputFile.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')) {
                                     $bytes = [System.IO.File]::ReadAllBytes($outputFile.FullName)
                                     $contentType = switch ($outputFile.Extension) {
                                         '.md' { 'text/markdown; charset=utf-8' }
@@ -3209,7 +3630,14 @@ function Start-APIServer {
                                         '.json' { 'application/json; charset=utf-8' }
                                         '.txt' { 'text/plain; charset=utf-8' }
                                         '.xml' { 'application/xml; charset=utf-8' }
-                                        default { 'text/plain; charset=utf-8' }
+                                        '.png' { 'image/png' }
+                                        '.jpg' { 'image/jpeg' }
+                                        '.jpeg' { 'image/jpeg' }
+                                        '.gif' { 'image/gif' }
+                                        '.bmp' { 'image/bmp' }
+                                        '.tiff' { 'image/tiff' }
+                                        '.webp' { 'image/webp' }
+                                        default { 'application/octet-stream' }
                                     }
                                     $response.ContentType = $contentType
                                     $response.ContentLength64 = $bytes.Length
@@ -3251,7 +3679,28 @@ function Start-APIServer {
                                     } | ConvertTo-Json
                                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
                                     $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                    return
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
+                                }
+
+                                # Check file size limit (100MB) - validate before decoding to save resources
+                                $base64Length = $data.dataBase64.Length
+                                $estimatedSizeBytes = ($base64Length * 3) / 4  # Base64 is ~133% of original size
+                                $maxSizeBytes = 100 * 1024 * 1024  # 100MB
+
+                                if ($estimatedSizeBytes -gt $maxSizeBytes) {
+                                    $sizeMB = [Math]::Round($estimatedSizeBytes / (1024 * 1024), 2)
+                                    $response.StatusCode = 413  # Payload Too Large
+                                    $responseContent = @{
+                                        success = $false
+                                        error   = "File size ($sizeMB MB) exceeds the 100MB limit"
+                                    } | ConvertTo-Json
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
                                 }
 
                                 $uploadId = [guid]::NewGuid().ToString()
@@ -3259,7 +3708,24 @@ function Start-APIServer {
                                 New-Item -ItemType Directory -Force -Path $uploadDir | Out-Null
 
                                 $filePath = Join-Path $uploadDir $secureFileName
-                                [System.IO.File]::WriteAllBytes($filePath, [Convert]::FromBase64String($data.dataBase64))
+                                $fileBytes = [Convert]::FromBase64String($data.dataBase64)
+
+                                # Double-check actual file size after decoding
+                                if ($fileBytes.Length -gt $maxSizeBytes) {
+                                    $sizeMB = [Math]::Round($fileBytes.Length / (1024 * 1024), 2)
+                                    $response.StatusCode = 413  # Payload Too Large
+                                    $responseContent = @{
+                                        success = $false
+                                        error   = "File size ($sizeMB MB) exceeds the 100MB limit"
+                                    } | ConvertTo-Json
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
+                                }
+
+                                [System.IO.File]::WriteAllBytes($filePath, $fileBytes)
 
                                 # Prepare Add-DocumentToQueue parameters
                                 $queueParams = @{
@@ -3284,6 +3750,11 @@ function Start-APIServer {
                                 if ($data.chunkIncludeContext -eq $true) { $queueParams.ChunkIncludeContext = $true }
                                 if ($data.chunkTableSerialization) { $queueParams.ChunkTableSerialization = $data.chunkTableSerialization }
                                 if ($data.chunkPictureStrategy) { $queueParams.ChunkPictureStrategy = $data.chunkPictureStrategy }
+                                if ($data.chunkImagePlaceholder) { $queueParams.ChunkImagePlaceholder = $data.chunkImagePlaceholder }
+                                if ($data.chunkOverlapTokens) { $queueParams.ChunkOverlapTokens = $data.chunkOverlapTokens }
+                                if ($data.chunkPreserveSentences -eq $true) { $queueParams.ChunkPreserveSentences = $true }
+                                if ($data.chunkPreserveCode -eq $true) { $queueParams.ChunkPreserveCode = $true }
+                                if ($data.chunkModelPreset) { $queueParams.ChunkModelPreset = $data.chunkModelPreset }
 
                                 # Queue with parameters - ensure we only capture the ID string
                                 $queueId = Add-DocumentToQueue @queueParams | Select-Object -Last 1
@@ -3345,6 +3816,11 @@ function Start-APIServer {
                                 $chunkIncludeContext = if ($data.chunkIncludeContext) { $data.chunkIncludeContext } else { $false }
                                 $chunkTableSerialization = if ($data.chunkTableSerialization) { $data.chunkTableSerialization } else { 'triplets' }
                                 $chunkPictureStrategy = if ($data.chunkPictureStrategy) { $data.chunkPictureStrategy } else { 'default' }
+                                $chunkImagePlaceholder = if ($data.chunkImagePlaceholder) { $data.chunkImagePlaceholder } else { '[IMAGE]' }
+                                $chunkOverlapTokens = if ($data.chunkOverlapTokens) { $data.chunkOverlapTokens } else { 0 }
+                                $chunkPreserveSentences = if ($data.chunkPreserveSentences) { $data.chunkPreserveSentences } else { $false }
+                                $chunkPreserveCode = if ($data.chunkPreserveCode) { $data.chunkPreserveCode } else { $false }
+                                $chunkModelPreset = if ($data.chunkModelPreset) { $data.chunkModelPreset } else { '' }
 
                                 # Get the current document status
                                 $allStatus = Get-ProcessingStatus
@@ -3380,6 +3856,11 @@ function Start-APIServer {
                                         ChunkIncludeContext      = $chunkIncludeContext
                                         ChunkTableSerialization  = $chunkTableSerialization
                                         ChunkPictureStrategy     = $chunkPictureStrategy
+                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
+                                        ChunkOverlapTokens       = $chunkOverlapTokens
+                                        ChunkPreserveSentences   = $chunkPreserveSentences
+                                        ChunkPreserveCode        = $chunkPreserveCode
+                                        ChunkModelPreset         = $chunkModelPreset
 
                                         Status                   = 'Queued'
                                         QueuedTime               = Get-Date
@@ -3407,6 +3888,11 @@ function Start-APIServer {
                                         ChunkIncludeContext      = $chunkIncludeContext
                                         ChunkTableSerialization  = $chunkTableSerialization
                                         ChunkPictureStrategy     = $chunkPictureStrategy
+                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
+                                        ChunkOverlapTokens       = $chunkOverlapTokens
+                                        ChunkPreserveSentences   = $chunkPreserveSentences
+                                        ChunkPreserveCode        = $chunkPreserveCode
+                                        ChunkModelPreset         = $chunkModelPreset
 
                                         QueuedTime               = Get-Date
                                         IsReprocess              = $true
@@ -3459,8 +3945,13 @@ function Start-APIServer {
                                 $chunkIncludeContext = if ($data.chunkIncludeContext) { $data.chunkIncludeContext } else { $false }
                                 $chunkTableSerialization = if ($data.chunkTableSerialization) { $data.chunkTableSerialization } else { 'triplets' }
                                 $chunkPictureStrategy = if ($data.chunkPictureStrategy) { $data.chunkPictureStrategy } else { 'default' }
+                                $chunkImagePlaceholder = if ($data.chunkImagePlaceholder) { $data.chunkImagePlaceholder } else { '[IMAGE]' }
+                                $chunkOverlapTokens = if ($data.chunkOverlapTokens) { $data.chunkOverlapTokens } else { 0 }
+                                $chunkPreserveSentences = if ($data.chunkPreserveSentences) { $data.chunkPreserveSentences } else { $false }
+                                $chunkPreserveCode = if ($data.chunkPreserveCode) { $data.chunkPreserveCode } else { $false }
+                                $chunkModelPreset = if ($data.chunkModelPreset) { $data.chunkModelPreset } else { '' }
 
-                                $success = Start-DocumentConversion -DocumentId $documentId -ExportFormat $exportFormat -EmbedImages:$embedImages -EnrichCode:$enrichCode -EnrichFormula:$enrichFormula -EnrichPictureClasses:$enrichPictureClasses -EnrichPictureDescription:$enrichPictureDescription -EnableChunking:$enableChunking -ChunkTokenizerBackend $chunkTokenizerBackend -ChunkTokenizerModel $chunkTokenizerModel -ChunkOpenAIModel $chunkOpenAIModel -ChunkMaxTokens $chunkMaxTokens -ChunkMergePeers:$chunkMergePeers -ChunkIncludeContext:$chunkIncludeContext -ChunkTableSerialization $chunkTableSerialization -ChunkPictureStrategy $chunkPictureStrategy
+                                $success = Start-DocumentConversion -DocumentId $documentId -ExportFormat $exportFormat -EmbedImages:$embedImages -EnrichCode:$enrichCode -EnrichFormula:$enrichFormula -EnrichPictureClasses:$enrichPictureClasses -EnrichPictureDescription:$enrichPictureDescription -EnableChunking:$enableChunking -ChunkTokenizerBackend $chunkTokenizerBackend -ChunkTokenizerModel $chunkTokenizerModel -ChunkOpenAIModel $chunkOpenAIModel -ChunkMaxTokens $chunkMaxTokens -ChunkMergePeers:$chunkMergePeers -ChunkIncludeContext:$chunkIncludeContext -ChunkTableSerialization $chunkTableSerialization -ChunkPictureStrategy $chunkPictureStrategy -ChunkImagePlaceholder $chunkImagePlaceholder -ChunkOverlapTokens $chunkOverlapTokens -ChunkPreserveSentences:$chunkPreserveSentences -ChunkPreserveCode:$chunkPreserveCode -ChunkModelPreset $chunkModelPreset
 
                                 if ($success) {
                                     $responseContent = @{
@@ -3556,6 +4047,49 @@ function Start-APIServer {
                         }
                     }
 
+                    '^/api/cancel/(.+)$' {
+                        $id = $Matches[1]
+                        try {
+                            # Mark document for cancellation
+                            $allStatus = Get-ProcessingStatus
+                            $status = $allStatus[$id]
+
+                            if (-not $status) {
+                                $response.StatusCode = 404
+                                $responseContent = @{
+                                    success = $false
+                                    error   = "Document not found"
+                                } | ConvertTo-Json
+                            }
+                            elseif ($status.Status -eq 'Processing') {
+                                # Update status to mark for cancellation
+                                Update-ItemStatus $id @{
+                                    CancelRequested = $true
+                                }
+                                $response.StatusCode = 200
+                                $responseContent = @{
+                                    success = $true
+                                    message = "Cancellation requested"
+                                } | ConvertTo-Json
+                            }
+                            else {
+                                $response.StatusCode = 400
+                                $responseContent = @{
+                                    success = $false
+                                    error   = "Document is not currently processing (Status: $($status.Status))"
+                                } | ConvertTo-Json
+                            }
+                        }
+                        catch {
+                            $response.StatusCode = 500
+                            $responseContent = @{
+                                success = $false
+                                error   = "Failed to cancel document"
+                                details = $_.Exception.Message
+                            } | ConvertTo-Json
+                        }
+                    }
+
                     '^/api/documents/(.+)/reset$' {
                         if ($request.HttpMethod -eq 'POST') {
                             $documentId = $Matches[1]
@@ -3599,6 +4133,104 @@ function Start-APIServer {
                                     details = $_.Exception.Message
                                 } | ConvertTo-Json
                             }
+                        }
+                    }
+
+                    # Download single document as ZIP
+                    '^/api/download/([a-fA-F0-9\-]+)$' {
+                        $docId = $Matches[1]
+                        $processedDir = $script:DoclingSystem.OutputDirectory
+                        $docDir = Join-Path $processedDir $docId
+
+                        if (Test-Path $docDir) {
+                            try {
+                                # Create ZIP file in temp directory
+                                $zipPath = Join-Path $env:TEMP "$docId.zip"
+
+                                # Remove existing ZIP if it exists
+                                if (Test-Path $zipPath) {
+                                    Remove-Item $zipPath -Force
+                                }
+
+                                # Create ZIP archive
+                                Compress-Archive -Path "$docDir\*" -DestinationPath $zipPath -Force
+
+                                # Send ZIP file
+                                $fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
+                                $response.ContentType = "application/zip"
+                                $response.ContentLength64 = $fileBytes.Length
+                                $response.Headers.Add("Content-Disposition", "attachment; filename=`"$docId.zip`"")
+                                $response.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                                $response.Close()
+
+                                # Clean up temp file
+                                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                                continue
+                            }
+                            catch {
+                                $response.StatusCode = 500
+                                $responseContent = @{
+                                    error = "Failed to create download"
+                                    details = $_.Exception.Message
+                                } | ConvertTo-Json
+                            }
+                        }
+                        else {
+                            $response.StatusCode = 404
+                            $responseContent = @{ error = "Document not found" } | ConvertTo-Json
+                        }
+                    }
+
+                    # Download all documents as ZIP
+                    '^/api/download-all$' {
+                        $processedDir = $script:DoclingSystem.OutputDirectory
+
+                        if (Test-Path $processedDir) {
+                            try {
+                                # Create timestamp for filename
+                                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                                $zipPath = Join-Path $env:TEMP "PSDocling_Export_$timestamp.zip"
+
+                                # Remove existing ZIP if it exists
+                                if (Test-Path $zipPath) {
+                                    Remove-Item $zipPath -Force
+                                }
+
+                                # Get all document folders
+                                $docFolders = Get-ChildItem -Path $processedDir -Directory
+
+                                if ($docFolders.Count -eq 0) {
+                                    $response.StatusCode = 404
+                                    $responseContent = @{ error = "No documents to download" } | ConvertTo-Json
+                                }
+                                else {
+                                    # Create ZIP archive with all documents
+                                    Compress-Archive -Path "$processedDir\*" -DestinationPath $zipPath -Force
+
+                                    # Send ZIP file
+                                    $fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
+                                    $response.ContentType = "application/zip"
+                                    $response.ContentLength64 = $fileBytes.Length
+                                    $response.Headers.Add("Content-Disposition", "attachment; filename=`"PSDocling_Export_$timestamp.zip`"")
+                                    $response.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                                    $response.Close()
+
+                                    # Clean up temp file
+                                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                                    continue
+                                }
+                            }
+                            catch {
+                                $response.StatusCode = 500
+                                $responseContent = @{
+                                    error = "Failed to create bulk download"
+                                    details = $_.Exception.Message
+                                } | ConvertTo-Json
+                            }
+                        }
+                        else {
+                            $response.StatusCode = 404
+                            $responseContent = @{ error = "No processed documents directory found" } | ConvertTo-Json
                         }
                     }
 
@@ -3701,6 +4333,7 @@ function Start-DocumentProcessor {
             $processCompletedNormally = $false
             $processExitCode = -1
             $processTerminatedEarly = $false
+            $wasCancelled = $false
 
             try {
                 if ($script:DoclingSystem.PythonAvailable) {
@@ -3859,8 +4492,8 @@ try:
         return updated_content, images_extracted
 
     # Use Docling's native image handling based on embed_images setting
-    image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.REFERENCED
-    images_extracted = len(result.document.pictures) if hasattr(result.document, 'pictures') else 0
+    image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.PLACEHOLDER
+    images_extracted = 0  # Will be updated by save_images_and_update_content if extraction happens
 
     dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3868,26 +4501,58 @@ try:
     if export_format == 'markdown':
         if image_mode == ImageRefMode.EMBEDDED:
             content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+            images_extracted = 0  # Images are embedded, not extracted
         else:
-            content = result.document.export_to_markdown()
+            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+            content = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
             content, images_extracted = save_images_and_update_content(content, 'markdown')
         dst.write_text(content, encoding='utf-8')
         print(f"Saved markdown with custom image handling", file=sys.stderr)
     elif export_format == 'html':
         if image_mode == ImageRefMode.EMBEDDED:
             content = result.document.export_to_html(image_mode=ImageRefMode.EMBEDDED)
+            images_extracted = 0  # Images are embedded, not extracted
         else:
-            content = result.document.export_to_html()
+            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+            content = result.document.export_to_html(image_mode=ImageRefMode.PLACEHOLDER)
             content, images_extracted = save_images_and_update_content(content, 'html')
         dst.write_text(content, encoding='utf-8')
         print(f"Saved HTML with custom image handling", file=sys.stderr)
     elif export_format == 'json':
         import json
+        # Extract images to separate files even for JSON format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for JSON export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
+
         doc_dict = result.document.export_to_dict()
         content = json.dumps(doc_dict, indent=2, ensure_ascii=False)
         dst.write_text(content, encoding='utf-8')
         print(f"Saved JSON (images in document structure)", file=sys.stderr)
     elif export_format == 'text':
+        # Extract images to separate files even for text format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for text export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
+
         # For text format, use markdown export and convert
         try:
             content = result.document.export_to_text()
@@ -3909,6 +4574,20 @@ try:
         import xml.etree.ElementTree as ET
         from xml.sax.saxutils import escape
         import json
+
+        # Extract images to separate files even for doctags format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for doctags export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
 
         try:
             # Try the native export_to_doctags first
@@ -3991,17 +4670,11 @@ except Exception as e:
                             $elapsed = (Get-Date) - $startTime
                             $elapsedMs = $elapsed.TotalMilliseconds
 
-                            # Check for timeout - extend for AI model enrichments (Granite Vision, CodeFormula model loading)
-                            $timeoutSeconds = if ($item.EnrichPictureDescription) {
-                                2400  # 40 min for Granite Vision
-                            } elseif ($item.EnrichCode -or $item.EnrichFormula) {
-                                1800  # 30 min for Code/Formula Understanding
-                            } else {
-                                1200  # 20 min for standard processing
-                            }
+                            # Check for timeout - extended to 6 hours for large documents and AI model processing
+                            $timeoutSeconds = 21600  # 6 hours for all processing types
                             if ($elapsed.TotalSeconds -gt $timeoutSeconds) {
-                                $timeoutMinutes = $timeoutSeconds / 60
-                                Write-Host "Process timeout for $($item.FileName) after $timeoutMinutes minutes, terminating..." -ForegroundColor Yellow
+                                $timeoutHours = [Math]::Round($timeoutSeconds / 3600, 1)
+                                Write-Host "Process timeout for $($item.FileName) after $timeoutHours hours, terminating..." -ForegroundColor Yellow
                                 $processTerminatedEarly = $true
                                 try {
                                     $process.Kill()
@@ -4009,6 +4682,39 @@ except Exception as e:
                                 catch {
                                     Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
                                 }
+                                break
+                            }
+
+                            # Check for cancellation request
+                            $currentStatus = Get-ProcessingStatus
+                            if ($currentStatus[$item.Id].CancelRequested) {
+                                Write-Host "Cancellation requested for $($item.FileName), terminating..." -ForegroundColor Yellow
+                                try {
+                                    $process.Kill()
+                                    $processTerminatedEarly = $true
+                                }
+                                catch {
+                                    Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
+                                }
+
+                                # Delete output directory if it exists
+                                if (Test-Path $outputDir) {
+                                    Remove-Item -Path $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+                                    Write-Host "Deleted output directory for cancelled document: $outputDir" -ForegroundColor Yellow
+                                }
+
+                                # Update status to Cancelled
+                                Update-ItemStatus $item.Id @{
+                                    Status    = 'Cancelled'
+                                    EndTime   = Get-Date
+                                    Error     = "Processing cancelled by user"
+                                    Progress  = 0
+                                }
+
+                                # Set flag to skip error handling
+                                $wasCancelled = $true
+
+                                # Skip to next queue item - do not continue to error handling
                                 break
                             }
 
@@ -4031,30 +4737,32 @@ except Exception as e:
                                 }
                             }
 
-                            # Calculate and update progress with guards - special handling for AI model enrichments
+                            # Calculate and update progress with guards - improved progress calculation for AI enrichments
                             if ($item.EnrichPictureDescription) {
-                                # Picture Description (Granite Vision) - extended timeline with model loading phases
+                                # Picture Description (Granite Vision) - smooth linear progress
                                 if ($elapsed.TotalSeconds -lt 300) {
-                                    # First 5 minutes: Model download/loading - slow progress to 25%
+                                    # First 5 minutes: Model download/loading - progress to 25%
                                     $progress = ($elapsed.TotalSeconds / 300.0) * 25.0
-                                } elseif ($elapsed.TotalSeconds -lt 900) {
-                                    # Next 10 minutes: Model processing - 25% to 80%
-                                    $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 600.0) * 55.0
+                                } elseif ($elapsed.TotalSeconds -lt 1800) {
+                                    # Next 25 minutes: Main processing - 25% to 90%
+                                    $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 1500.0) * 65.0
                                 } else {
-                                    # Final phase: slow progress to 95%
-                                    $progress = 80.0 + [Math]::Min(15.0, (($elapsed.TotalSeconds - 900.0) / 600.0) * 15.0)
+                                    # Final phase: continue linear progress to 95%, then hold
+                                    $remainingTime = 21600.0 - 1800.0  # 6 hours - 30 minutes
+                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1800.0) / $remainingTime) * 5.0)
                                 }
                             } elseif ($item.EnrichCode -or $item.EnrichFormula) {
-                                # Code/Formula Understanding (CodeFormulaV2) - similar timeline to Granite Vision
+                                # Code/Formula Understanding (CodeFormulaV2) - smooth linear progress
                                 if ($elapsed.TotalSeconds -lt 180) {
-                                    # First 3 minutes: Model download/loading - slow progress to 20%
+                                    # First 3 minutes: Model download/loading - progress to 20%
                                     $progress = ($elapsed.TotalSeconds / 180.0) * 20.0
-                                } elseif ($elapsed.TotalSeconds -lt 600) {
-                                    # Next 7 minutes: Model processing - 20% to 85%
-                                    $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 420.0) * 65.0
+                                } elseif ($elapsed.TotalSeconds -lt 1200) {
+                                    # Next 17 minutes: Main processing - 20% to 90%
+                                    $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 1020.0) * 70.0
                                 } else {
-                                    # Final phase: slow progress to 95%
-                                    $progress = 85.0 + [Math]::Min(10.0, (($elapsed.TotalSeconds - 600.0) / 300.0) * 10.0)
+                                    # Final phase: continue linear progress to 95%, then hold
+                                    $remainingTime = 21600.0 - 1200.0  # 6 hours - 20 minutes
+                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1200.0) / $remainingTime) * 5.0)
                                 }
                             } elseif ($estimatedDurationMs -gt 0) {
                                 $progress = [Math]::Min(95.0, ([double]($elapsedMs) / [double]($estimatedDurationMs)) * 100.0)
@@ -4079,7 +4787,7 @@ except Exception as e:
 
                         $finished = $true
 
-                        if ($finished) {
+                        if ($finished -and -not $wasCancelled) {
                             # Process has exited - now check results AFTER process completion
                             # Wait for process to fully exit before accessing ExitCode
                             if (-not $process.HasExited) {
@@ -4175,28 +4883,43 @@ except Exception as e:
                 }
 
                 if ($success) {
+                    # Initialize status update but don't mark as completed yet
                     $statusUpdate = @{
-                        Status     = 'Completed'
                         OutputFile = $outputFile
-                        EndTime    = Get-Date
-                        Progress   = 100
+                        Progress   = 50  # Base conversion is 50% of total progress
                     }
+
+                    # Track which enhancements need to run
+                    $enhancementsToRun = @()
+                    if ($item.EnableChunking) { $enhancementsToRun += 'Chunking' }
 
                     # Add image extraction info if available
                     if ($imagesExtracted -gt 0) {
                         $statusUpdate.ImagesExtracted = $imagesExtracted
                         # Images are now in same folder as output file
                         $statusUpdate.ImagesDirectory = Split-Path $outputFile -Parent
-                        Write-Host "Completed: $($item.FileName) ($imagesExtracted images extracted)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($item.FileName) ($imagesExtracted images extracted)" -ForegroundColor Green
                     }
                     else {
-                        Write-Host "Completed: $($item.FileName)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($item.FileName)" -ForegroundColor Green
                     }
+
+                    # Calculate progress increment for each enhancement
+                    $enhancementProgressIncrement = if ($enhancementsToRun.Count -gt 0) { 50 / $enhancementsToRun.Count } else { 50 }
+                    $currentProgress = 50
 
                     # Process chunking if enabled
                     if ($item.EnableChunking -and $outputFile) {
                         try {
                             Write-Host "Starting hybrid chunking for $($item.FileName)..." -ForegroundColor Yellow
+
+                            # Update status to show chunking in progress
+                            Update-ItemStatus $item.Id @{
+                                Status = 'Processing'
+                                Progress = $currentProgress
+                                EnhancementsInProgress = $true
+                                ActiveEnhancements = @('Chunking')
+                            }
 
                             # Build chunking parameters
                             # Use the original source file for chunking, not the converted output
@@ -4219,6 +4942,23 @@ except Exception as e:
                                 $chunkParams.IncludeContext = $true
                             }
 
+                            # Add advanced parameters if present
+                            if ($item.ChunkImagePlaceholder) {
+                                $chunkParams.ImagePlaceholder = $item.ChunkImagePlaceholder
+                            }
+                            if ($item.ChunkOverlapTokens) {
+                                $chunkParams.OverlapTokens = $item.ChunkOverlapTokens
+                            }
+                            if ($item.ChunkPreserveSentences) {
+                                $chunkParams.PreserveSentenceBoundaries = $true
+                            }
+                            if ($item.ChunkPreserveCode) {
+                                $chunkParams.PreserveCodeBlocks = $true
+                            }
+                            if ($item.ChunkModelPreset) {
+                                $chunkParams.ModelPreset = $item.ChunkModelPreset
+                            }
+
                             # Generate chunks output path in the same directory as the converted file
                             $baseNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
                             $outputDir = [System.IO.Path]::GetDirectoryName($outputFile)
@@ -4231,6 +4971,8 @@ except Exception as e:
                             if ($chunkResult -and (Test-Path $chunkResult)) {
                                 $statusUpdate.ChunksFile = $chunkResult
                                 Write-Host "Chunking completed: $chunkResult" -ForegroundColor Green
+                                $currentProgress += $enhancementProgressIncrement
+                                $statusUpdate.Progress = [Math]::Min(100, $currentProgress)
                             } else {
                                 Write-Warning "Chunking did not produce output file"
                             }
@@ -4241,7 +4983,18 @@ except Exception as e:
                             $statusUpdate.ChunkingError = $_.Exception.Message
                         }
                     }
+                    else {
+                        # No enhancements, so we're done
+                        $statusUpdate.Progress = 100
+                    }
 
+                    # Now mark as completed after all enhancements are done
+                    $statusUpdate.Status = 'Completed'
+                    $statusUpdate.EndTime = Get-Date
+                    $statusUpdate.EnhancementsInProgress = $false
+                    $statusUpdate.ActiveEnhancements = @()
+
+                    Write-Host "All processing completed for: $($item.FileName)" -ForegroundColor Green
                     Update-ItemStatus $item.Id $statusUpdate
                 }
                 else {
@@ -4572,7 +5325,7 @@ Start-DocumentProcessor
 }
 
 
-Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Get-NextQueueItem', 'Get-QueueItems', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem')
+Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Optimize-ChunksForRAG', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Get-NextQueueItem', 'Get-QueueItems', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem')
 
-Write-Host 'PSDocling Module Loaded - Version 3.0.0' -ForegroundColor Cyan
+Write-Host 'PSDocling Module Loaded - Version 3.1.0' -ForegroundColor Cyan
 

@@ -1,7 +1,7 @@
 @{
     # Module manifest for PSDocling
     RootModule = 'PSDocling.psm1'
-    ModuleVersion = '3.0.0'
+    ModuleVersion = '3.1.0'
 
     # Unique identifier for this module
     GUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
@@ -42,6 +42,7 @@
         'Update-ItemStatus',
         'Clear-PSDoclingSystem',
         'Invoke-DoclingHybridChunking',
+        'Optimize-ChunksForRAG',
         'Test-EnhancedChunking'
     )
 

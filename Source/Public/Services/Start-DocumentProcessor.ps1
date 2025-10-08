@@ -61,6 +61,7 @@ function Start-DocumentProcessor {
             $processCompletedNormally = $false
             $processExitCode = -1
             $processTerminatedEarly = $false
+            $wasCancelled = $false
 
             try {
                 if ($script:DoclingSystem.PythonAvailable) {
@@ -219,8 +220,8 @@ try:
         return updated_content, images_extracted
 
     # Use Docling's native image handling based on embed_images setting
-    image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.REFERENCED
-    images_extracted = len(result.document.pictures) if hasattr(result.document, 'pictures') else 0
+    image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.PLACEHOLDER
+    images_extracted = 0  # Will be updated by save_images_and_update_content if extraction happens
 
     dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -228,26 +229,58 @@ try:
     if export_format == 'markdown':
         if image_mode == ImageRefMode.EMBEDDED:
             content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+            images_extracted = 0  # Images are embedded, not extracted
         else:
-            content = result.document.export_to_markdown()
+            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+            content = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
             content, images_extracted = save_images_and_update_content(content, 'markdown')
         dst.write_text(content, encoding='utf-8')
         print(f"Saved markdown with custom image handling", file=sys.stderr)
     elif export_format == 'html':
         if image_mode == ImageRefMode.EMBEDDED:
             content = result.document.export_to_html(image_mode=ImageRefMode.EMBEDDED)
+            images_extracted = 0  # Images are embedded, not extracted
         else:
-            content = result.document.export_to_html()
+            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+            content = result.document.export_to_html(image_mode=ImageRefMode.PLACEHOLDER)
             content, images_extracted = save_images_and_update_content(content, 'html')
         dst.write_text(content, encoding='utf-8')
         print(f"Saved HTML with custom image handling", file=sys.stderr)
     elif export_format == 'json':
         import json
+        # Extract images to separate files even for JSON format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for JSON export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
+
         doc_dict = result.document.export_to_dict()
         content = json.dumps(doc_dict, indent=2, ensure_ascii=False)
         dst.write_text(content, encoding='utf-8')
         print(f"Saved JSON (images in document structure)", file=sys.stderr)
     elif export_format == 'text':
+        # Extract images to separate files even for text format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for text export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
+
         # For text format, use markdown export and convert
         try:
             content = result.document.export_to_text()
@@ -269,6 +302,20 @@ try:
         import xml.etree.ElementTree as ET
         from xml.sax.saxutils import escape
         import json
+
+        # Extract images to separate files even for doctags format (unless embedding)
+        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+            for i, picture in enumerate(result.document.pictures):
+                try:
+                    pil_image = picture.get_image(result.document)
+                    if pil_image:
+                        image_filename = f"image_{images_extracted + 1:03d}.png"
+                        image_path = images_dir / image_filename
+                        pil_image.save(str(image_path), 'PNG')
+                        print(f"Extracted image {images_extracted + 1} for doctags export: {image_path}", file=sys.stderr)
+                        images_extracted += 1
+                except Exception as img_error:
+                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
 
         try:
             # Try the native export_to_doctags first
@@ -351,17 +398,11 @@ except Exception as e:
                             $elapsed = (Get-Date) - $startTime
                             $elapsedMs = $elapsed.TotalMilliseconds
 
-                            # Check for timeout - extend for AI model enrichments (Granite Vision, CodeFormula model loading)
-                            $timeoutSeconds = if ($item.EnrichPictureDescription) {
-                                2400  # 40 min for Granite Vision
-                            } elseif ($item.EnrichCode -or $item.EnrichFormula) {
-                                1800  # 30 min for Code/Formula Understanding
-                            } else {
-                                1200  # 20 min for standard processing
-                            }
+                            # Check for timeout - extended to 6 hours for large documents and AI model processing
+                            $timeoutSeconds = 21600  # 6 hours for all processing types
                             if ($elapsed.TotalSeconds -gt $timeoutSeconds) {
-                                $timeoutMinutes = $timeoutSeconds / 60
-                                Write-Host "Process timeout for $($item.FileName) after $timeoutMinutes minutes, terminating..." -ForegroundColor Yellow
+                                $timeoutHours = [Math]::Round($timeoutSeconds / 3600, 1)
+                                Write-Host "Process timeout for $($item.FileName) after $timeoutHours hours, terminating..." -ForegroundColor Yellow
                                 $processTerminatedEarly = $true
                                 try {
                                     $process.Kill()
@@ -369,6 +410,39 @@ except Exception as e:
                                 catch {
                                     Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
                                 }
+                                break
+                            }
+
+                            # Check for cancellation request
+                            $currentStatus = Get-ProcessingStatus
+                            if ($currentStatus[$item.Id].CancelRequested) {
+                                Write-Host "Cancellation requested for $($item.FileName), terminating..." -ForegroundColor Yellow
+                                try {
+                                    $process.Kill()
+                                    $processTerminatedEarly = $true
+                                }
+                                catch {
+                                    Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
+                                }
+
+                                # Delete output directory if it exists
+                                if (Test-Path $outputDir) {
+                                    Remove-Item -Path $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+                                    Write-Host "Deleted output directory for cancelled document: $outputDir" -ForegroundColor Yellow
+                                }
+
+                                # Update status to Cancelled
+                                Update-ItemStatus $item.Id @{
+                                    Status    = 'Cancelled'
+                                    EndTime   = Get-Date
+                                    Error     = "Processing cancelled by user"
+                                    Progress  = 0
+                                }
+
+                                # Set flag to skip error handling
+                                $wasCancelled = $true
+
+                                # Skip to next queue item - do not continue to error handling
                                 break
                             }
 
@@ -391,30 +465,32 @@ except Exception as e:
                                 }
                             }
 
-                            # Calculate and update progress with guards - special handling for AI model enrichments
+                            # Calculate and update progress with guards - improved progress calculation for AI enrichments
                             if ($item.EnrichPictureDescription) {
-                                # Picture Description (Granite Vision) - extended timeline with model loading phases
+                                # Picture Description (Granite Vision) - smooth linear progress
                                 if ($elapsed.TotalSeconds -lt 300) {
-                                    # First 5 minutes: Model download/loading - slow progress to 25%
+                                    # First 5 minutes: Model download/loading - progress to 25%
                                     $progress = ($elapsed.TotalSeconds / 300.0) * 25.0
-                                } elseif ($elapsed.TotalSeconds -lt 900) {
-                                    # Next 10 minutes: Model processing - 25% to 80%
-                                    $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 600.0) * 55.0
+                                } elseif ($elapsed.TotalSeconds -lt 1800) {
+                                    # Next 25 minutes: Main processing - 25% to 90%
+                                    $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 1500.0) * 65.0
                                 } else {
-                                    # Final phase: slow progress to 95%
-                                    $progress = 80.0 + [Math]::Min(15.0, (($elapsed.TotalSeconds - 900.0) / 600.0) * 15.0)
+                                    # Final phase: continue linear progress to 95%, then hold
+                                    $remainingTime = 21600.0 - 1800.0  # 6 hours - 30 minutes
+                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1800.0) / $remainingTime) * 5.0)
                                 }
                             } elseif ($item.EnrichCode -or $item.EnrichFormula) {
-                                # Code/Formula Understanding (CodeFormulaV2) - similar timeline to Granite Vision
+                                # Code/Formula Understanding (CodeFormulaV2) - smooth linear progress
                                 if ($elapsed.TotalSeconds -lt 180) {
-                                    # First 3 minutes: Model download/loading - slow progress to 20%
+                                    # First 3 minutes: Model download/loading - progress to 20%
                                     $progress = ($elapsed.TotalSeconds / 180.0) * 20.0
-                                } elseif ($elapsed.TotalSeconds -lt 600) {
-                                    # Next 7 minutes: Model processing - 20% to 85%
-                                    $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 420.0) * 65.0
+                                } elseif ($elapsed.TotalSeconds -lt 1200) {
+                                    # Next 17 minutes: Main processing - 20% to 90%
+                                    $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 1020.0) * 70.0
                                 } else {
-                                    # Final phase: slow progress to 95%
-                                    $progress = 85.0 + [Math]::Min(10.0, (($elapsed.TotalSeconds - 600.0) / 300.0) * 10.0)
+                                    # Final phase: continue linear progress to 95%, then hold
+                                    $remainingTime = 21600.0 - 1200.0  # 6 hours - 20 minutes
+                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1200.0) / $remainingTime) * 5.0)
                                 }
                             } elseif ($estimatedDurationMs -gt 0) {
                                 $progress = [Math]::Min(95.0, ([double]($elapsedMs) / [double]($estimatedDurationMs)) * 100.0)
@@ -439,7 +515,7 @@ except Exception as e:
 
                         $finished = $true
 
-                        if ($finished) {
+                        if ($finished -and -not $wasCancelled) {
                             # Process has exited - now check results AFTER process completion
                             # Wait for process to fully exit before accessing ExitCode
                             if (-not $process.HasExited) {
@@ -535,28 +611,43 @@ except Exception as e:
                 }
 
                 if ($success) {
+                    # Initialize status update but don't mark as completed yet
                     $statusUpdate = @{
-                        Status     = 'Completed'
                         OutputFile = $outputFile
-                        EndTime    = Get-Date
-                        Progress   = 100
+                        Progress   = 50  # Base conversion is 50% of total progress
                     }
+
+                    # Track which enhancements need to run
+                    $enhancementsToRun = @()
+                    if ($item.EnableChunking) { $enhancementsToRun += 'Chunking' }
 
                     # Add image extraction info if available
                     if ($imagesExtracted -gt 0) {
                         $statusUpdate.ImagesExtracted = $imagesExtracted
                         # Images are now in same folder as output file
                         $statusUpdate.ImagesDirectory = Split-Path $outputFile -Parent
-                        Write-Host "Completed: $($item.FileName) ($imagesExtracted images extracted)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($item.FileName) ($imagesExtracted images extracted)" -ForegroundColor Green
                     }
                     else {
-                        Write-Host "Completed: $($item.FileName)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($item.FileName)" -ForegroundColor Green
                     }
+
+                    # Calculate progress increment for each enhancement
+                    $enhancementProgressIncrement = if ($enhancementsToRun.Count -gt 0) { 50 / $enhancementsToRun.Count } else { 50 }
+                    $currentProgress = 50
 
                     # Process chunking if enabled
                     if ($item.EnableChunking -and $outputFile) {
                         try {
                             Write-Host "Starting hybrid chunking for $($item.FileName)..." -ForegroundColor Yellow
+
+                            # Update status to show chunking in progress
+                            Update-ItemStatus $item.Id @{
+                                Status = 'Processing'
+                                Progress = $currentProgress
+                                EnhancementsInProgress = $true
+                                ActiveEnhancements = @('Chunking')
+                            }
 
                             # Build chunking parameters
                             # Use the original source file for chunking, not the converted output
@@ -579,6 +670,23 @@ except Exception as e:
                                 $chunkParams.IncludeContext = $true
                             }
 
+                            # Add advanced parameters if present
+                            if ($item.ChunkImagePlaceholder) {
+                                $chunkParams.ImagePlaceholder = $item.ChunkImagePlaceholder
+                            }
+                            if ($item.ChunkOverlapTokens) {
+                                $chunkParams.OverlapTokens = $item.ChunkOverlapTokens
+                            }
+                            if ($item.ChunkPreserveSentences) {
+                                $chunkParams.PreserveSentenceBoundaries = $true
+                            }
+                            if ($item.ChunkPreserveCode) {
+                                $chunkParams.PreserveCodeBlocks = $true
+                            }
+                            if ($item.ChunkModelPreset) {
+                                $chunkParams.ModelPreset = $item.ChunkModelPreset
+                            }
+
                             # Generate chunks output path in the same directory as the converted file
                             $baseNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
                             $outputDir = [System.IO.Path]::GetDirectoryName($outputFile)
@@ -591,6 +699,8 @@ except Exception as e:
                             if ($chunkResult -and (Test-Path $chunkResult)) {
                                 $statusUpdate.ChunksFile = $chunkResult
                                 Write-Host "Chunking completed: $chunkResult" -ForegroundColor Green
+                                $currentProgress += $enhancementProgressIncrement
+                                $statusUpdate.Progress = [Math]::Min(100, $currentProgress)
                             } else {
                                 Write-Warning "Chunking did not produce output file"
                             }
@@ -601,7 +711,18 @@ except Exception as e:
                             $statusUpdate.ChunkingError = $_.Exception.Message
                         }
                     }
+                    else {
+                        # No enhancements, so we're done
+                        $statusUpdate.Progress = 100
+                    }
 
+                    # Now mark as completed after all enhancements are done
+                    $statusUpdate.Status = 'Completed'
+                    $statusUpdate.EndTime = Get-Date
+                    $statusUpdate.EnhancementsInProgress = $false
+                    $statusUpdate.ActiveEnhancements = @()
+
+                    Write-Host "All processing completed for: $($item.FileName)" -ForegroundColor Green
                     Update-ItemStatus $item.Id $statusUpdate
                 }
                 else {

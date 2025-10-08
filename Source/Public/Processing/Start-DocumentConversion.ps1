@@ -83,6 +83,11 @@ function Start-DocumentConversion {
         ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
         ChunkTableSerialization  = $ChunkTableSerialization
         ChunkPictureStrategy     = $ChunkPictureStrategy
+        ChunkImagePlaceholder    = $ChunkImagePlaceholder
+        ChunkOverlapTokens       = $ChunkOverlapTokens
+        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
+        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
+        ChunkModelPreset         = $ChunkModelPreset
 
         Status                   = 'Queued'
         QueuedTime               = Get-Date
@@ -111,6 +116,11 @@ function Start-DocumentConversion {
         ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
         ChunkTableSerialization  = $ChunkTableSerialization
         ChunkPictureStrategy     = $ChunkPictureStrategy
+        ChunkImagePlaceholder    = $ChunkImagePlaceholder
+        ChunkOverlapTokens       = $ChunkOverlapTokens
+        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
+        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
+        ChunkModelPreset         = $ChunkModelPreset
     }
 
     Write-Host "Started conversion for: $($documentStatus.FileName) (ID: $DocumentId)" -ForegroundColor Green

@@ -1,5 +1,5 @@
-# 📄 PSDocling - A PowerShell Document Processing Module
-
+# 📄 PSDocling - A PowerShell Document Processing Module 
+ 
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docling](https://img.shields.io/badge/Docling%2B-red.svg)](https://docling-project.github.io/docling/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/)
@@ -80,10 +80,6 @@ The web interface will open automatically at `http://localhost:8081`
 #### File Upload & Processing
 ![Uploaded File](UploadedFile.JPG)
 *Real-time processing status with progress tracking*
-
-#### Re-process Documents
-![Reprocess](Reprocess.JPG)
-*Convert processed documents to different formats without re-uploading*
 
 **Features:**
 - 📁 Drag-drop file upload

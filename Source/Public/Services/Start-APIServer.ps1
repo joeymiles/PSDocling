@@ -85,6 +85,24 @@ function Start-APIServer {
                                 $doc.enrichPictureClasses = if ($_.Value.EnrichPictureClasses) { [bool]$_.Value.EnrichPictureClasses } else { $false }
                                 $doc.enrichPictureDescription = if ($_.Value.EnrichPictureDescription) { [bool]$_.Value.EnrichPictureDescription } else { $false }
 
+                                # Add chunking options with defaults
+                                $doc.enableChunking = if ($_.Value.EnableChunking) { [bool]$_.Value.EnableChunking } else { $false }
+                                if ($doc.enableChunking) {
+                                    $doc.chunkTokenizerBackend = if ($_.Value.ChunkTokenizerBackend) { $_.Value.ChunkTokenizerBackend } else { 'hf' }
+                                    $doc.chunkTokenizerModel = if ($_.Value.ChunkTokenizerModel) { $_.Value.ChunkTokenizerModel } else { 'sentence-transformers/all-MiniLM-L6-v2' }
+                                    $doc.chunkOpenAIModel = if ($_.Value.ChunkOpenAIModel) { $_.Value.ChunkOpenAIModel } else { 'gpt-4o-mini' }
+                                    $doc.chunkMaxTokens = if ($_.Value.ChunkMaxTokens) { $_.Value.ChunkMaxTokens } else { 512 }
+                                    $doc.chunkMergePeers = if ($null -ne $_.Value.ChunkMergePeers) { [bool]$_.Value.ChunkMergePeers } else { $true }
+                                    $doc.chunkIncludeContext = if ($_.Value.ChunkIncludeContext) { [bool]$_.Value.ChunkIncludeContext } else { $false }
+                                    $doc.chunkTableSerialization = if ($_.Value.ChunkTableSerialization) { $_.Value.ChunkTableSerialization } else { 'triplets' }
+                                    $doc.chunkPictureStrategy = if ($_.Value.ChunkPictureStrategy) { $_.Value.ChunkPictureStrategy } else { 'default' }
+                                    $doc.chunkImagePlaceholder = if ($_.Value.ChunkImagePlaceholder) { $_.Value.ChunkImagePlaceholder } else { '[IMAGE]' }
+                                    $doc.chunkOverlapTokens = if ($_.Value.ChunkOverlapTokens) { $_.Value.ChunkOverlapTokens } else { 0 }
+                                    $doc.chunkPreserveSentences = if ($_.Value.ChunkPreserveSentences) { [bool]$_.Value.ChunkPreserveSentences } else { $false }
+                                    $doc.chunkPreserveCode = if ($_.Value.ChunkPreserveCode) { [bool]$_.Value.ChunkPreserveCode } else { $false }
+                                    $doc.chunkModelPreset = if ($_.Value.ChunkModelPreset) { $_.Value.ChunkModelPreset } else { '' }
+                                }
+
                                 # Add progress data if available
                                 if ($_.Value.Progress) { $doc.progress = $_.Value.Progress }
                                 if ($_.Value.EstimatedDuration) { $doc.estimatedDuration = $_.Value.EstimatedDuration }
@@ -118,7 +136,7 @@ function Start-APIServer {
                                 Get-ChildItem $processedDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                                     $docId = $_.Name
                                     try {
-                                        Get-ChildItem $_.FullName -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml') } | ForEach-Object {
+                                        Get-ChildItem $_.FullName -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp') } | ForEach-Object {
                                             $filePath = $_.FullName
                                             $fileName = $_.Name
                                             $fileSize = [math]::Round($_.Length / 1KB, 2)
@@ -247,7 +265,7 @@ function Start-APIServer {
                                 if ($requestedFile) {
                                     # Serve specific file with security validation
                                     try {
-                                        $secureFileName = Get-SecureFileName -FileName $requestedFile -AllowedExtensions @('.md', '.html', '.json', '.txt', '.xml')
+                                        $secureFileName = Get-SecureFileName -FileName $requestedFile -AllowedExtensions @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
                                         $filePath = Join-Path $docDir $secureFileName
 
                                         # Additional security check: ensure the resolved path is still within the document directory
@@ -272,10 +290,10 @@ function Start-APIServer {
                                 }
                                 else {
                                     # Fallback: serve first available file (for Processing Results)
-                                    $outputFile = Get-ChildItem $docDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml') } | Select-Object -First 1
+                                    $outputFile = Get-ChildItem $docDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp') } | Select-Object -First 1
                                 }
 
-                                if ($outputFile -and $outputFile.Extension -in @('.md', '.html', '.json', '.txt', '.xml')) {
+                                if ($outputFile -and $outputFile.Extension -in @('.md', '.html', '.json', '.txt', '.xml', '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')) {
                                     $bytes = [System.IO.File]::ReadAllBytes($outputFile.FullName)
                                     $contentType = switch ($outputFile.Extension) {
                                         '.md' { 'text/markdown; charset=utf-8' }
@@ -283,7 +301,14 @@ function Start-APIServer {
                                         '.json' { 'application/json; charset=utf-8' }
                                         '.txt' { 'text/plain; charset=utf-8' }
                                         '.xml' { 'application/xml; charset=utf-8' }
-                                        default { 'text/plain; charset=utf-8' }
+                                        '.png' { 'image/png' }
+                                        '.jpg' { 'image/jpeg' }
+                                        '.jpeg' { 'image/jpeg' }
+                                        '.gif' { 'image/gif' }
+                                        '.bmp' { 'image/bmp' }
+                                        '.tiff' { 'image/tiff' }
+                                        '.webp' { 'image/webp' }
+                                        default { 'application/octet-stream' }
                                     }
                                     $response.ContentType = $contentType
                                     $response.ContentLength64 = $bytes.Length
@@ -325,7 +350,28 @@ function Start-APIServer {
                                     } | ConvertTo-Json
                                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
                                     $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                    return
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
+                                }
+
+                                # Check file size limit (100MB) - validate before decoding to save resources
+                                $base64Length = $data.dataBase64.Length
+                                $estimatedSizeBytes = ($base64Length * 3) / 4  # Base64 is ~133% of original size
+                                $maxSizeBytes = 100 * 1024 * 1024  # 100MB
+
+                                if ($estimatedSizeBytes -gt $maxSizeBytes) {
+                                    $sizeMB = [Math]::Round($estimatedSizeBytes / (1024 * 1024), 2)
+                                    $response.StatusCode = 413  # Payload Too Large
+                                    $responseContent = @{
+                                        success = $false
+                                        error   = "File size ($sizeMB MB) exceeds the 100MB limit"
+                                    } | ConvertTo-Json
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
                                 }
 
                                 $uploadId = [guid]::NewGuid().ToString()
@@ -333,7 +379,24 @@ function Start-APIServer {
                                 New-Item -ItemType Directory -Force -Path $uploadDir | Out-Null
 
                                 $filePath = Join-Path $uploadDir $secureFileName
-                                [System.IO.File]::WriteAllBytes($filePath, [Convert]::FromBase64String($data.dataBase64))
+                                $fileBytes = [Convert]::FromBase64String($data.dataBase64)
+
+                                # Double-check actual file size after decoding
+                                if ($fileBytes.Length -gt $maxSizeBytes) {
+                                    $sizeMB = [Math]::Round($fileBytes.Length / (1024 * 1024), 2)
+                                    $response.StatusCode = 413  # Payload Too Large
+                                    $responseContent = @{
+                                        success = $false
+                                        error   = "File size ($sizeMB MB) exceeds the 100MB limit"
+                                    } | ConvertTo-Json
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($responseContent)
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    $response.OutputStream.Close()
+                                    $response.Close()
+                                    continue
+                                }
+
+                                [System.IO.File]::WriteAllBytes($filePath, $fileBytes)
 
                                 # Prepare Add-DocumentToQueue parameters
                                 $queueParams = @{
@@ -358,6 +421,11 @@ function Start-APIServer {
                                 if ($data.chunkIncludeContext -eq $true) { $queueParams.ChunkIncludeContext = $true }
                                 if ($data.chunkTableSerialization) { $queueParams.ChunkTableSerialization = $data.chunkTableSerialization }
                                 if ($data.chunkPictureStrategy) { $queueParams.ChunkPictureStrategy = $data.chunkPictureStrategy }
+                                if ($data.chunkImagePlaceholder) { $queueParams.ChunkImagePlaceholder = $data.chunkImagePlaceholder }
+                                if ($data.chunkOverlapTokens) { $queueParams.ChunkOverlapTokens = $data.chunkOverlapTokens }
+                                if ($data.chunkPreserveSentences -eq $true) { $queueParams.ChunkPreserveSentences = $true }
+                                if ($data.chunkPreserveCode -eq $true) { $queueParams.ChunkPreserveCode = $true }
+                                if ($data.chunkModelPreset) { $queueParams.ChunkModelPreset = $data.chunkModelPreset }
 
                                 # Queue with parameters - ensure we only capture the ID string
                                 $queueId = Add-DocumentToQueue @queueParams | Select-Object -Last 1
@@ -419,6 +487,11 @@ function Start-APIServer {
                                 $chunkIncludeContext = if ($data.chunkIncludeContext) { $data.chunkIncludeContext } else { $false }
                                 $chunkTableSerialization = if ($data.chunkTableSerialization) { $data.chunkTableSerialization } else { 'triplets' }
                                 $chunkPictureStrategy = if ($data.chunkPictureStrategy) { $data.chunkPictureStrategy } else { 'default' }
+                                $chunkImagePlaceholder = if ($data.chunkImagePlaceholder) { $data.chunkImagePlaceholder } else { '[IMAGE]' }
+                                $chunkOverlapTokens = if ($data.chunkOverlapTokens) { $data.chunkOverlapTokens } else { 0 }
+                                $chunkPreserveSentences = if ($data.chunkPreserveSentences) { $data.chunkPreserveSentences } else { $false }
+                                $chunkPreserveCode = if ($data.chunkPreserveCode) { $data.chunkPreserveCode } else { $false }
+                                $chunkModelPreset = if ($data.chunkModelPreset) { $data.chunkModelPreset } else { '' }
 
                                 # Get the current document status
                                 $allStatus = Get-ProcessingStatus
@@ -454,6 +527,11 @@ function Start-APIServer {
                                         ChunkIncludeContext      = $chunkIncludeContext
                                         ChunkTableSerialization  = $chunkTableSerialization
                                         ChunkPictureStrategy     = $chunkPictureStrategy
+                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
+                                        ChunkOverlapTokens       = $chunkOverlapTokens
+                                        ChunkPreserveSentences   = $chunkPreserveSentences
+                                        ChunkPreserveCode        = $chunkPreserveCode
+                                        ChunkModelPreset         = $chunkModelPreset
 
                                         Status                   = 'Queued'
                                         QueuedTime               = Get-Date
@@ -481,6 +559,11 @@ function Start-APIServer {
                                         ChunkIncludeContext      = $chunkIncludeContext
                                         ChunkTableSerialization  = $chunkTableSerialization
                                         ChunkPictureStrategy     = $chunkPictureStrategy
+                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
+                                        ChunkOverlapTokens       = $chunkOverlapTokens
+                                        ChunkPreserveSentences   = $chunkPreserveSentences
+                                        ChunkPreserveCode        = $chunkPreserveCode
+                                        ChunkModelPreset         = $chunkModelPreset
 
                                         QueuedTime               = Get-Date
                                         IsReprocess              = $true
@@ -533,8 +616,13 @@ function Start-APIServer {
                                 $chunkIncludeContext = if ($data.chunkIncludeContext) { $data.chunkIncludeContext } else { $false }
                                 $chunkTableSerialization = if ($data.chunkTableSerialization) { $data.chunkTableSerialization } else { 'triplets' }
                                 $chunkPictureStrategy = if ($data.chunkPictureStrategy) { $data.chunkPictureStrategy } else { 'default' }
+                                $chunkImagePlaceholder = if ($data.chunkImagePlaceholder) { $data.chunkImagePlaceholder } else { '[IMAGE]' }
+                                $chunkOverlapTokens = if ($data.chunkOverlapTokens) { $data.chunkOverlapTokens } else { 0 }
+                                $chunkPreserveSentences = if ($data.chunkPreserveSentences) { $data.chunkPreserveSentences } else { $false }
+                                $chunkPreserveCode = if ($data.chunkPreserveCode) { $data.chunkPreserveCode } else { $false }
+                                $chunkModelPreset = if ($data.chunkModelPreset) { $data.chunkModelPreset } else { '' }
 
-                                $success = Start-DocumentConversion -DocumentId $documentId -ExportFormat $exportFormat -EmbedImages:$embedImages -EnrichCode:$enrichCode -EnrichFormula:$enrichFormula -EnrichPictureClasses:$enrichPictureClasses -EnrichPictureDescription:$enrichPictureDescription -EnableChunking:$enableChunking -ChunkTokenizerBackend $chunkTokenizerBackend -ChunkTokenizerModel $chunkTokenizerModel -ChunkOpenAIModel $chunkOpenAIModel -ChunkMaxTokens $chunkMaxTokens -ChunkMergePeers:$chunkMergePeers -ChunkIncludeContext:$chunkIncludeContext -ChunkTableSerialization $chunkTableSerialization -ChunkPictureStrategy $chunkPictureStrategy
+                                $success = Start-DocumentConversion -DocumentId $documentId -ExportFormat $exportFormat -EmbedImages:$embedImages -EnrichCode:$enrichCode -EnrichFormula:$enrichFormula -EnrichPictureClasses:$enrichPictureClasses -EnrichPictureDescription:$enrichPictureDescription -EnableChunking:$enableChunking -ChunkTokenizerBackend $chunkTokenizerBackend -ChunkTokenizerModel $chunkTokenizerModel -ChunkOpenAIModel $chunkOpenAIModel -ChunkMaxTokens $chunkMaxTokens -ChunkMergePeers:$chunkMergePeers -ChunkIncludeContext:$chunkIncludeContext -ChunkTableSerialization $chunkTableSerialization -ChunkPictureStrategy $chunkPictureStrategy -ChunkImagePlaceholder $chunkImagePlaceholder -ChunkOverlapTokens $chunkOverlapTokens -ChunkPreserveSentences:$chunkPreserveSentences -ChunkPreserveCode:$chunkPreserveCode -ChunkModelPreset $chunkModelPreset
 
                                 if ($success) {
                                     $responseContent = @{
@@ -630,6 +718,49 @@ function Start-APIServer {
                         }
                     }
 
+                    '^/api/cancel/(.+)$' {
+                        $id = $Matches[1]
+                        try {
+                            # Mark document for cancellation
+                            $allStatus = Get-ProcessingStatus
+                            $status = $allStatus[$id]
+
+                            if (-not $status) {
+                                $response.StatusCode = 404
+                                $responseContent = @{
+                                    success = $false
+                                    error   = "Document not found"
+                                } | ConvertTo-Json
+                            }
+                            elseif ($status.Status -eq 'Processing') {
+                                # Update status to mark for cancellation
+                                Update-ItemStatus $id @{
+                                    CancelRequested = $true
+                                }
+                                $response.StatusCode = 200
+                                $responseContent = @{
+                                    success = $true
+                                    message = "Cancellation requested"
+                                } | ConvertTo-Json
+                            }
+                            else {
+                                $response.StatusCode = 400
+                                $responseContent = @{
+                                    success = $false
+                                    error   = "Document is not currently processing (Status: $($status.Status))"
+                                } | ConvertTo-Json
+                            }
+                        }
+                        catch {
+                            $response.StatusCode = 500
+                            $responseContent = @{
+                                success = $false
+                                error   = "Failed to cancel document"
+                                details = $_.Exception.Message
+                            } | ConvertTo-Json
+                        }
+                    }
+
                     '^/api/documents/(.+)/reset$' {
                         if ($request.HttpMethod -eq 'POST') {
                             $documentId = $Matches[1]
@@ -673,6 +804,104 @@ function Start-APIServer {
                                     details = $_.Exception.Message
                                 } | ConvertTo-Json
                             }
+                        }
+                    }
+
+                    # Download single document as ZIP
+                    '^/api/download/([a-fA-F0-9\-]+)$' {
+                        $docId = $Matches[1]
+                        $processedDir = $script:DoclingSystem.OutputDirectory
+                        $docDir = Join-Path $processedDir $docId
+
+                        if (Test-Path $docDir) {
+                            try {
+                                # Create ZIP file in temp directory
+                                $zipPath = Join-Path $env:TEMP "$docId.zip"
+
+                                # Remove existing ZIP if it exists
+                                if (Test-Path $zipPath) {
+                                    Remove-Item $zipPath -Force
+                                }
+
+                                # Create ZIP archive
+                                Compress-Archive -Path "$docDir\*" -DestinationPath $zipPath -Force
+
+                                # Send ZIP file
+                                $fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
+                                $response.ContentType = "application/zip"
+                                $response.ContentLength64 = $fileBytes.Length
+                                $response.Headers.Add("Content-Disposition", "attachment; filename=`"$docId.zip`"")
+                                $response.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                                $response.Close()
+
+                                # Clean up temp file
+                                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                                continue
+                            }
+                            catch {
+                                $response.StatusCode = 500
+                                $responseContent = @{
+                                    error = "Failed to create download"
+                                    details = $_.Exception.Message
+                                } | ConvertTo-Json
+                            }
+                        }
+                        else {
+                            $response.StatusCode = 404
+                            $responseContent = @{ error = "Document not found" } | ConvertTo-Json
+                        }
+                    }
+
+                    # Download all documents as ZIP
+                    '^/api/download-all$' {
+                        $processedDir = $script:DoclingSystem.OutputDirectory
+
+                        if (Test-Path $processedDir) {
+                            try {
+                                # Create timestamp for filename
+                                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                                $zipPath = Join-Path $env:TEMP "PSDocling_Export_$timestamp.zip"
+
+                                # Remove existing ZIP if it exists
+                                if (Test-Path $zipPath) {
+                                    Remove-Item $zipPath -Force
+                                }
+
+                                # Get all document folders
+                                $docFolders = Get-ChildItem -Path $processedDir -Directory
+
+                                if ($docFolders.Count -eq 0) {
+                                    $response.StatusCode = 404
+                                    $responseContent = @{ error = "No documents to download" } | ConvertTo-Json
+                                }
+                                else {
+                                    # Create ZIP archive with all documents
+                                    Compress-Archive -Path "$processedDir\*" -DestinationPath $zipPath -Force
+
+                                    # Send ZIP file
+                                    $fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
+                                    $response.ContentType = "application/zip"
+                                    $response.ContentLength64 = $fileBytes.Length
+                                    $response.Headers.Add("Content-Disposition", "attachment; filename=`"PSDocling_Export_$timestamp.zip`"")
+                                    $response.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                                    $response.Close()
+
+                                    # Clean up temp file
+                                    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                                    continue
+                                }
+                            }
+                            catch {
+                                $response.StatusCode = 500
+                                $responseContent = @{
+                                    error = "Failed to create bulk download"
+                                    details = $_.Exception.Message
+                                } | ConvertTo-Json
+                            }
+                        }
+                        else {
+                            $response.StatusCode = 404
+                            $responseContent = @{ error = "No processed documents directory found" } | ConvertTo-Json
                         }
                     }
 

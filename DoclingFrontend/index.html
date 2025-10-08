@@ -1,33 +1,9 @@
-﻿<#
-.SYNOPSIS
-    New-FrontendFiles function from PSDocling module
-.DESCRIPTION
-    Writes a redesigned index.html for PSDocling and a small static dev server.
-    Original module by: Jaga
-.NOTES
-    Part of PSDocling Document Processing System
-#>
-function New-FrontendFiles {
-    [CmdletBinding()]
-    param()
-
-    $frontendDir = ".\DoclingFrontend"
-    if (-not (Test-Path $frontendDir)) {
-        New-Item -ItemType Directory -Path $frontendDir -Force | Out-Null
-    }
-
-    # Pull version from module context if present, otherwise default
-    $version = $script:DoclingSystem.Version
-    if (-not $version) { $version = "3.1.0" }
-
-    # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
-    $html = @"
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>PSDocling v$version</title>
+    <title>PSDocling v3.1.0</title>
     <style>
         :root{
             --bg: #0f1115;
@@ -256,7 +232,7 @@ function New-FrontendFiles {
                 <div class="brand">
                     <div class="logo" aria-hidden="true"></div>
                     <div>
-                        <h1>PSDocling <span class="badge" aria-label="version">v$version</span></h1>
+                        <h1>PSDocling <span class="badge" aria-label="version">v3.1.0</span></h1>
                         <p class="subtitle">PowerShell-based Document Processor for Docling</p>
                     </div>
                 </div>
@@ -1457,86 +1433,3 @@ function New-FrontendFiles {
     </script>
 </body>
 </html>
-"@
-
-    $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding UTF8
-
-    # Smarter web server (serves correct MIME types, basic cache headers, 404 handling)
-    $webServer = @'
-param([int]$Port = 8081)
-
-$http = New-Object System.Net.HttpListener
-$prefix = "http://localhost:$Port/"
-$http.Prefixes.Add($prefix)
-$http.Start()
-
-Write-Host "Web server running at $prefix" -ForegroundColor Green
-
-# Simple mime map
-$MimeMap = @{
-  ".html" = "text/html; charset=utf-8"
-  ".htm"  = "text/html; charset=utf-8"
-  ".css"  = "text/css; charset=utf-8"
-  ".js"   = "application/javascript; charset=utf-8"
-  ".json" = "application/json; charset=utf-8"
-  ".svg"  = "image/svg+xml"
-  ".png"  = "image/png"
-  ".jpg"  = "image/jpeg"
-  ".jpeg" = "image/jpeg"
-  ".gif"  = "image/gif"
-  ".webp" = "image/webp"
-  ".ico"  = "image/x-icon"
-  ".txt"  = "text/plain; charset=utf-8"
-  ".map"  = "application/json; charset=utf-8"
-  ".xml"  = "application/xml; charset=utf-8"
-}
-
-try {
-  while ($http.IsListening) {
-    $context = $http.GetContext()
-    $response = $context.Response
-    $request  = $context.Request
-
-    $path = $request.Url.LocalPath
-    if ($path -eq "/" -or [string]::IsNullOrEmpty($path)) { $path = "/index.html" }
-
-    $filePath = Join-Path $PSScriptRoot $path.TrimStart('/')
-
-    if (Test-Path $filePath) {
-      try {
-        $bytes = [System.IO.File]::ReadAllBytes($filePath)
-        $ext = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
-        $contentType = $MimeMap[$ext]
-        if (-not $contentType) { $contentType = "application/octet-stream" }
-        $response.ContentType = $contentType
-        # Basic cache headers for static content
-        $response.AddHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-        $response.AddHeader("Pragma", "no-cache")
-        $response.AddHeader("Expires", "0")
-        $response.ContentLength64 = $bytes.Length
-        $response.OutputStream.Write($bytes, 0, $bytes.Length)
-      } catch {
-        $response.StatusCode = 500
-        $msg = [System.Text.Encoding]::UTF8.GetBytes("Internal server error: $($_.Exception.Message)")
-        $response.OutputStream.Write($msg, 0, $msg.Length)
-      }
-    } else {
-      $response.StatusCode = 404
-      $body = "<!doctype html><meta charset=`"utf-8`"><title>404</title><body style='font-family:Segoe UI,Roboto,Arial; padding:24px'><h1>404 Not Found</h1><p>$([System.Web.HttpUtility]::HtmlEncode($path))</p></body>"
-      $msg = [System.Text.Encoding]::UTF8.GetBytes($body)
-      $response.ContentType = "text/html; charset=utf-8"
-      $response.ContentLength64 = $msg.Length
-      $response.OutputStream.Write($msg, 0, $msg.Length)
-    }
-
-    $response.Close()
-  }
-} finally {
-  $http.Stop()
-}
-'@
-
-    $webServer | Set-Content (Join-Path $frontendDir "Start-WebServer.ps1") -Encoding UTF8
-
-    Write-Host "Frontend files created in $frontendDir" -ForegroundColor Green
-}

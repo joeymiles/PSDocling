@@ -6,10 +6,10 @@
 #>
 
 # Docling Document Processing System
-# Version: 3.0.0
+# Version: 3.1.0
 
 $script:DoclingSystem = @{
-    Version          = "3.0.0"
+    Version          = "3.1.0"
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = ".\ProcessedDocuments"
     APIPort          = 8080

@@ -84,7 +84,7 @@ foreach ($docId in $docIds) {
             } else {
                 "N/A"
             }
-            OutputFile = if ($doc.OutputFile -and (Test-Path $doc.OutputFile)) { "✓" } else { "✗" }
+            OutputFile = if ($doc.OutputFile -and (Test-Path $doc.OutputFile)) { "YES" } else { "NO" }
         }
     }
 }

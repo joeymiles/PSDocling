@@ -12,12 +12,17 @@ function Update-ItemStatus {
 
     $statusFile = $script:DoclingSystem.StatusFile
 
+    # Capture variables for the closure
+    $localStatusFile = $statusFile
+    $localId = $Id
+    $localUpdates = $Updates
+
     Use-FileMutex -Name "status" -Script {
         # Read current status
         $status = @{}
-        if (Test-Path $statusFile) {
+        if (Test-Path $localStatusFile) {
             try {
-                $content = Get-Content $statusFile -Raw
+                $content = Get-Content $localStatusFile -Raw
                 $jsonObj = $content | ConvertFrom-Json
 
                 # Convert PSCustomObject to hashtable manually
@@ -33,23 +38,34 @@ function Update-ItemStatus {
         }
 
         # Convert existing item to hashtable if it's a PSObject
-        if ($status[$Id]) {
-            if ($status[$Id] -is [PSCustomObject]) {
+        if ($status[$localId]) {
+            if ($status[$localId] -is [PSCustomObject]) {
                 $itemHash = @{}
-                $status[$Id].PSObject.Properties | ForEach-Object {
+                $status[$localId].PSObject.Properties | ForEach-Object {
                     $itemHash[$_.Name] = $_.Value
                 }
-                $status[$Id] = $itemHash
+                $status[$localId] = $itemHash
+            }
+            # ENSURE it's a hashtable - if not, create new one with existing properties
+            if ($status[$localId] -isnot [hashtable]) {
+                $oldItem = $status[$localId]
+                $status[$localId] = @{}
+                # Try to copy any existing properties
+                if ($oldItem -is [PSCustomObject]) {
+                    $oldItem.PSObject.Properties | ForEach-Object {
+                        $status[$localId][$_.Name] = $_.Value
+                    }
+                }
             }
         }
         else {
-            $status[$Id] = @{}
+            $status[$localId] = @{}
         }
 
         # Track session completion count (before applying updates)
-        if ($Updates.ContainsKey('Status') -and $Updates['Status'] -eq 'Completed') {
+        if ($localUpdates.ContainsKey('Status') -and $localUpdates['Status'] -eq 'Completed') {
             # Check if this item wasn't already completed
-            $wasCompleted = $status[$Id] -and $status[$Id]['Status'] -eq 'Completed'
+            $wasCompleted = $status[$localId] -and $status[$localId]['Status'] -eq 'Completed'
             if (-not $wasCompleted) {
                 if ($script:DoclingSystem -and $script:DoclingSystem.ContainsKey('SessionCompletedCount')) {
                     $script:DoclingSystem.SessionCompletedCount++
@@ -58,21 +74,21 @@ function Update-ItemStatus {
         }
 
         # Apply updates
-        foreach ($key in $Updates.Keys) {
-            $status[$Id][$key] = $Updates[$key]
+        foreach ($key in $localUpdates.Keys) {
+            $status[$localId][$key] = $localUpdates[$key]
         }
 
         # Write back atomically
-        $tempFile = "$statusFile.tmp"
+        $tempFile = "$localStatusFile.tmp"
         $status | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
-        Move-Item -Path $tempFile -Destination $statusFile -Force
+        Move-Item -Path $tempFile -Destination $localStatusFile -Force
 
         # Also update local cache (ensure it's initialized)
         if ($script:DoclingSystem -and $script:DoclingSystem.ContainsKey('ProcessingStatus')) {
             if ($null -eq $script:DoclingSystem.ProcessingStatus) {
                 $script:DoclingSystem['ProcessingStatus'] = @{}
             }
-            $script:DoclingSystem['ProcessingStatus'][$Id] = $status[$Id]
+            $script:DoclingSystem['ProcessingStatus'][$localId] = $status[$localId]
         }
     }.GetNewClosure()
 }

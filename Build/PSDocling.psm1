@@ -1229,41 +1229,8 @@ function Start-DocumentConversion {
         $documentStatus.ExportFormat = $ExportFormat
     }
 
-    # Create queue item for processing
-    $queueItem = @{
-        Id                       = $DocumentId
-        FilePath                 = $documentStatus.FilePath
-        FileName                 = $documentStatus.FileName
-        ExportFormat             = $documentStatus.ExportFormat
-        EmbedImages              = $EmbedImages.IsPresent
-        EnrichCode               = $EnrichCode.IsPresent
-        EnrichFormula            = $EnrichFormula.IsPresent
-        EnrichPictureClasses     = $EnrichPictureClasses.IsPresent
-        EnrichPictureDescription = $EnrichPictureDescription.IsPresent
-
-        # Chunking Options
-        EnableChunking           = $EnableChunking.IsPresent
-        ChunkTokenizerBackend    = $ChunkTokenizerBackend
-        ChunkTokenizerModel      = $ChunkTokenizerModel
-        ChunkOpenAIModel         = $ChunkOpenAIModel
-        ChunkMaxTokens           = $ChunkMaxTokens
-        ChunkMergePeers          = $ChunkMergePeers
-        ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
-        ChunkTableSerialization  = $ChunkTableSerialization
-        ChunkPictureStrategy     = $ChunkPictureStrategy
-        ChunkImagePlaceholder    = $ChunkImagePlaceholder
-        ChunkOverlapTokens       = $ChunkOverlapTokens
-        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
-        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
-        ChunkModelPreset         = $ChunkModelPreset
-
-        Status                   = 'Queued'
-        QueuedTime               = Get-Date
-        UploadedTime             = $documentStatus.UploadedTime
-    }
-
-    # Add to processing queue and update status
-    Add-QueueItem $queueItem
+    # Use folder-based queue - much simpler!
+    Add-QueueItemFolder $DocumentId
     Update-ItemStatus $DocumentId @{
         Status                   = 'Queued'
         QueuedTime               = Get-Date
@@ -1600,7 +1567,13 @@ function Add-QueueItem {
             try {
                 $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
-                    $queue = @($content | ConvertFrom-Json)
+                    $parsed = $content | ConvertFrom-Json
+                    # Ensure we get an array
+                    if ($parsed -is [array]) {
+                        $queue = $parsed
+                    } else {
+                        $queue = @($parsed)
+                    }
                 }
             }
             catch {
@@ -1608,21 +1581,50 @@ function Add-QueueItem {
             }
         }
 
-        # Add new item
-        $newQueue = @($queue) + @($localItem)
+        # Add new item - ensure both are arrays before concatenating
+        $queue = @($queue)
+        $newQueue = $queue + $localItem
 
-        # Write back atomically
+        # Write back atomically - ALWAYS force as an array with explicit formatting
         $tempFile = "$localQueueFile.tmp"
-        if ($newQueue.Count -eq 1) {
+        if ($newQueue.Count -eq 0) {
+            "[]" | Set-Content $tempFile -Encoding UTF8
+        }
+        elseif ($newQueue.Count -eq 1) {
+            # Force single item to be an array in JSON
             "[" + ($newQueue[0] | ConvertTo-Json -Depth 10 -Compress) + "]" | Set-Content $tempFile -Encoding UTF8
         }
         else {
-            $newQueue | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
+            @($newQueue) | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
         }
         Move-Item -Path $tempFile -Destination $localQueueFile -Force
     }.GetNewClosure()
 }
 
+# Public: Add-QueueItemFolder
+function Add-QueueItemFolder {
+    param(
+        [Parameter(Mandatory)]
+        [string]$DocumentId
+    )
+
+    # Ensure queue folder exists
+    $queueFolder = "$env:TEMP\DoclingQueue"
+    if (-not (Test-Path $queueFolder)) {
+        New-Item -Path $queueFolder -ItemType Directory -Force | Out-Null
+    }
+
+    # Create a queue file for this document
+    # File name format: timestamp_documentId.queue
+    $timestamp = [DateTime]::Now.ToString("yyyyMMddHHmmssffff")
+    $queueFile = Join-Path $queueFolder "${timestamp}_${DocumentId}.queue"
+
+    # Write the document ID to the file (simple content)
+    $DocumentId | Set-Content -Path $queueFile -Encoding UTF8
+
+    Write-Verbose "Added to queue: $DocumentId (File: $queueFile)"
+    return $queueFile
+}
 
 # Public: Get-NextQueueItem
 function Get-NextQueueItem {
@@ -1639,7 +1641,13 @@ function Get-NextQueueItem {
             try {
                 $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
-                    $queue = @($content | ConvertFrom-Json)
+                    $parsed = $content | ConvertFrom-Json
+                    # Don't double-wrap arrays
+                    if ($parsed -is [array]) {
+                        $queue = $parsed
+                    } else {
+                        $queue = @($parsed)
+                    }
                 }
             }
             catch {
@@ -1648,6 +1656,11 @@ function Get-NextQueueItem {
         }
 
         if ($queue.Count -gt 0) {
+            # Ensure we're working with an array
+            if ($queue -isnot [array]) {
+                $queue = @($queue)
+            }
+
             $nextItem = $queue[0]
             $remaining = if ($queue.Count -gt 1) { $queue[1..($queue.Count - 1)] } else { @() }
 
@@ -1671,6 +1684,39 @@ function Get-NextQueueItem {
     return $result
 }
 
+
+# Public: Get-NextQueueItemFolder
+function Get-NextQueueItemFolder {
+    $queueFolder = "$env:TEMP\DoclingQueue"
+
+    # Ensure queue folder exists
+    if (-not (Test-Path $queueFolder)) {
+        New-Item -Path $queueFolder -ItemType Directory -Force | Out-Null
+        return $null
+    }
+
+    # Get all queue files, sorted by creation time (oldest first)
+    $queueFiles = Get-ChildItem -Path $queueFolder -Filter "*.queue" |
+                  Sort-Object CreationTime |
+                  Select-Object -First 1
+
+    if (-not $queueFiles) {
+        Write-Verbose "No items in queue folder"
+        return $null
+    }
+
+    $queueFile = $queueFiles[0]
+
+    # Read the document ID from the file
+    $documentId = Get-Content -Path $queueFile.FullName -Raw -Encoding UTF8
+    $documentId = $documentId.Trim()
+
+    # Delete the queue file (item is now being processed)
+    Remove-Item -Path $queueFile.FullName -Force
+
+    Write-Verbose "Retrieved from queue: $documentId (File: $($queueFile.Name))"
+    return $documentId
+}
 
 # Public: Get-QueueItems
 function Get-QueueItems {
@@ -1699,6 +1745,34 @@ function Get-QueueItems {
     if ($result) { return $result } else { return @() }
 }
 
+
+# Public: Get-QueueItemsFolder
+function Get-QueueItemsFolder {
+    $queueFolder = "$env:TEMP\DoclingQueue"
+
+    # Ensure queue folder exists
+    if (-not (Test-Path $queueFolder)) {
+        return @()
+    }
+
+    # Get all queue files
+    $queueFiles = Get-ChildItem -Path $queueFolder -Filter "*.queue" |
+                  Sort-Object CreationTime
+
+    if (-not $queueFiles) {
+        return @()
+    }
+
+    # Read document IDs from all queue files
+    $queueItems = @()
+    foreach ($file in $queueFiles) {
+        $documentId = Get-Content -Path $file.FullName -Raw -Encoding UTF8
+        $queueItems += $documentId.Trim()
+    }
+
+    Write-Verbose "Found $($queueItems.Count) items in queue"
+    return $queueItems
+}
 
 # Public: Set-QueueItems
 function Set-QueueItems {
@@ -1737,12 +1811,17 @@ function Update-ItemStatus {
 
     $statusFile = $script:DoclingSystem.StatusFile
 
+    # Capture variables for the closure
+    $localStatusFile = $statusFile
+    $localId = $Id
+    $localUpdates = $Updates
+
     Use-FileMutex -Name "status" -Script {
         # Read current status
         $status = @{}
-        if (Test-Path $statusFile) {
+        if (Test-Path $localStatusFile) {
             try {
-                $content = Get-Content $statusFile -Raw
+                $content = Get-Content $localStatusFile -Raw
                 $jsonObj = $content | ConvertFrom-Json
 
                 # Convert PSCustomObject to hashtable manually
@@ -1758,23 +1837,34 @@ function Update-ItemStatus {
         }
 
         # Convert existing item to hashtable if it's a PSObject
-        if ($status[$Id]) {
-            if ($status[$Id] -is [PSCustomObject]) {
+        if ($status[$localId]) {
+            if ($status[$localId] -is [PSCustomObject]) {
                 $itemHash = @{}
-                $status[$Id].PSObject.Properties | ForEach-Object {
+                $status[$localId].PSObject.Properties | ForEach-Object {
                     $itemHash[$_.Name] = $_.Value
                 }
-                $status[$Id] = $itemHash
+                $status[$localId] = $itemHash
+            }
+            # ENSURE it's a hashtable - if not, create new one with existing properties
+            if ($status[$localId] -isnot [hashtable]) {
+                $oldItem = $status[$localId]
+                $status[$localId] = @{}
+                # Try to copy any existing properties
+                if ($oldItem -is [PSCustomObject]) {
+                    $oldItem.PSObject.Properties | ForEach-Object {
+                        $status[$localId][$_.Name] = $_.Value
+                    }
+                }
             }
         }
         else {
-            $status[$Id] = @{}
+            $status[$localId] = @{}
         }
 
         # Track session completion count (before applying updates)
-        if ($Updates.ContainsKey('Status') -and $Updates['Status'] -eq 'Completed') {
+        if ($localUpdates.ContainsKey('Status') -and $localUpdates['Status'] -eq 'Completed') {
             # Check if this item wasn't already completed
-            $wasCompleted = $status[$Id] -and $status[$Id]['Status'] -eq 'Completed'
+            $wasCompleted = $status[$localId] -and $status[$localId]['Status'] -eq 'Completed'
             if (-not $wasCompleted) {
                 if ($script:DoclingSystem -and $script:DoclingSystem.ContainsKey('SessionCompletedCount')) {
                     $script:DoclingSystem.SessionCompletedCount++
@@ -1783,21 +1873,21 @@ function Update-ItemStatus {
         }
 
         # Apply updates
-        foreach ($key in $Updates.Keys) {
-            $status[$Id][$key] = $Updates[$key]
+        foreach ($key in $localUpdates.Keys) {
+            $status[$localId][$key] = $localUpdates[$key]
         }
 
         # Write back atomically
-        $tempFile = "$statusFile.tmp"
+        $tempFile = "$localStatusFile.tmp"
         $status | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
-        Move-Item -Path $tempFile -Destination $statusFile -Force
+        Move-Item -Path $tempFile -Destination $localStatusFile -Force
 
         # Also update local cache (ensure it's initialized)
         if ($script:DoclingSystem -and $script:DoclingSystem.ContainsKey('ProcessingStatus')) {
             if ($null -eq $script:DoclingSystem.ProcessingStatus) {
                 $script:DoclingSystem['ProcessingStatus'] = @{}
             }
-            $script:DoclingSystem['ProcessingStatus'][$Id] = $status[$Id]
+            $script:DoclingSystem['ProcessingStatus'][$localId] = $status[$localId]
         }
     }.GetNewClosure()
 }
@@ -3382,7 +3472,7 @@ function Start-APIServer {
                     }
 
                     '^/api/status$' {
-                        $queue = Get-QueueItems
+                        $queue = Get-QueueItemsFolder
                         $allStatus = Get-ProcessingStatus
                         $queued = $allStatus.Values | Where-Object { $_.Status -eq 'Queued' }
                         $processing = $allStatus.Values | Where-Object { $_.Status -eq 'Processing' }
@@ -4289,602 +4379,698 @@ function Start-DocumentProcessor {
 
     Write-Host "Document processor started" -ForegroundColor Green
 
+    # Add error logging
+    $errorLogFile = "$env:TEMP\docling_processor_errors.log"
+    $debugLogFile = "$env:TEMP\docling_processor_debug.log"
+    "$(Get-Date) - Processor started" | Add-Content $debugLogFile
+
     while ($true) {
-        $item = Get-NextQueueItem
-        if ($item) {
-            Write-Host "Processing: $($item.FileName)" -ForegroundColor Yellow
+        try {
+            # Use folder-based queue - get the next document ID
+            $documentId = Get-NextQueueItemFolder
+            "$(Get-Date) - Get-NextQueueItemFolder returned: $(if ($documentId) { "ID: $documentId" } else { 'null' })" | Add-Content $debugLogFile
 
-            # Get file size for progress estimation
-            $fileSize = (Get-Item $item.FilePath).Length
-            $estimatedDurationMs = [Math]::Max(30000, [Math]::Min(300000, $fileSize / 1024 * 1000)) # 30s to 5min based on file size
+            if ($documentId) {
+                # Fetch the full document details from the status file
+                "$(Get-Date) - Fetching details for document ID: $documentId" | Add-Content $debugLogFile
+                $allStatus = Get-ProcessingStatus
+                $item = $allStatus[$documentId]
 
-            # Update status with progress tracking
-            Update-ItemStatus $item.Id @{
-                Status            = 'Processing'
-                StartTime         = Get-Date
-                Progress          = 0
-                FileSize          = $fileSize
-                EstimatedDuration = $estimatedDurationMs
+                if (-not $item) {
+                    "$(Get-Date) - ERROR: Could not find document $documentId in status file!" | Add-Content $debugLogFile
+                    Start-Sleep -Seconds 2
+                    continue
+                }
+
+                "$(Get-Date) - Found document in status file: $($item.FileName)" | Add-Content $debugLogFile
+
+                # Now extract ALL properties from the status item (simpler since it's from our own system)
+                $itemId = $documentId  # We already have the ID
+                $itemFilePath = if ($item.FilePath) { $item.FilePath } elseif ($item['FilePath']) { $item['FilePath'] } else { $null }
+                $itemFileName = if ($item.FileName) { $item.FileName } elseif ($item['FileName']) { $item['FileName'] } else { $null }
+                $itemExportFormat = if ($item.ExportFormat) { $item.ExportFormat } elseif ($item['ExportFormat']) { $item['ExportFormat'] } else { 'markdown' }
+                $itemEmbedImages = if ($item.EmbedImages) { $item.EmbedImages } elseif ($item['EmbedImages']) { $item['EmbedImages'] } else { $false }
+                $itemEnrichCode = if ($item.EnrichCode) { $item.EnrichCode } elseif ($item['EnrichCode']) { $item['EnrichCode'] } else { $false }
+                $itemEnrichFormula = if ($item.EnrichFormula) { $item.EnrichFormula } elseif ($item['EnrichFormula']) { $item['EnrichFormula'] } else { $false }
+                $itemEnrichPictureClasses = if ($item.EnrichPictureClasses) { $item.EnrichPictureClasses } elseif ($item['EnrichPictureClasses']) { $item['EnrichPictureClasses'] } else { $false }
+                $itemEnrichPictureDescription = if ($item.EnrichPictureDescription) { $item.EnrichPictureDescription } elseif ($item['EnrichPictureDescription']) { $item['EnrichPictureDescription'] } else { $false }
+
+                # Chunking properties
+                $itemEnableChunking = if ($item.EnableChunking) { $item.EnableChunking } elseif ($item['EnableChunking']) { $item['EnableChunking'] } else { $false }
+                $itemChunkTokenizerBackend = if ($item.ChunkTokenizerBackend) { $item.ChunkTokenizerBackend } elseif ($item['ChunkTokenizerBackend']) { $item['ChunkTokenizerBackend'] } else { 'hf' }
+                $itemChunkTokenizerModel = if ($item.ChunkTokenizerModel) { $item.ChunkTokenizerModel } elseif ($item['ChunkTokenizerModel']) { $item['ChunkTokenizerModel'] } else { 'sentence-transformers/all-MiniLM-L6-v2' }
+                $itemChunkOpenAIModel = if ($item.ChunkOpenAIModel) { $item.ChunkOpenAIModel } elseif ($item['ChunkOpenAIModel']) { $item['ChunkOpenAIModel'] } else { 'gpt-4o-mini' }
+                $itemChunkMaxTokens = if ($item.ChunkMaxTokens) { $item.ChunkMaxTokens } elseif ($item['ChunkMaxTokens']) { $item['ChunkMaxTokens'] } else { 512 }
+                $itemChunkMergePeers = if ($item.ChunkMergePeers -ne $null) { $item.ChunkMergePeers } elseif ($item['ChunkMergePeers'] -ne $null) { $item['ChunkMergePeers'] } else { $true }
+                $itemChunkIncludeContext = if ($item.ChunkIncludeContext) { $item.ChunkIncludeContext } elseif ($item['ChunkIncludeContext']) { $item['ChunkIncludeContext'] } else { $false }
+                $itemChunkTableSerialization = if ($item.ChunkTableSerialization) { $item.ChunkTableSerialization } elseif ($item['ChunkTableSerialization']) { $item['ChunkTableSerialization'] } else { 'triplets' }
+                $itemChunkPictureStrategy = if ($item.ChunkPictureStrategy) { $item.ChunkPictureStrategy } elseif ($item['ChunkPictureStrategy']) { $item['ChunkPictureStrategy'] } else { 'default' }
+                $itemChunkImagePlaceholder = if ($item.ChunkImagePlaceholder) { $item.ChunkImagePlaceholder } elseif ($item['ChunkImagePlaceholder']) { $item['ChunkImagePlaceholder'] } else { '[IMAGE]' }
+                $itemChunkOverlapTokens = if ($item.ChunkOverlapTokens) { $item.ChunkOverlapTokens } elseif ($item['ChunkOverlapTokens']) { $item['ChunkOverlapTokens'] } else { 0 }
+                $itemChunkPreserveSentences = if ($item.ChunkPreserveSentences) { $item.ChunkPreserveSentences } elseif ($item['ChunkPreserveSentences']) { $item['ChunkPreserveSentences'] } else { $false }
+                $itemChunkPreserveCode = if ($item.ChunkPreserveCode) { $item.ChunkPreserveCode } elseif ($item['ChunkPreserveCode']) { $item['ChunkPreserveCode'] } else { $false }
+                $itemChunkModelPreset = if ($item.ChunkModelPreset) { $item.ChunkModelPreset } elseif ($item['ChunkModelPreset']) { $item['ChunkModelPreset'] } else { '' }
+
+                "$(Get-Date) - Item ID: $itemId" | Add-Content $debugLogFile
+                "$(Get-Date) - Item FilePath: $itemFilePath" | Add-Content $debugLogFile
+                "$(Get-Date) - Item FileName: $itemFileName" | Add-Content $debugLogFile
+
+                if (-not $itemId -or -not $itemFilePath) {
+                    "$(Get-Date) - ERROR: Missing critical properties (ID or FilePath)" | Add-Content $debugLogFile
+
+                    # Try to log all properties for debugging
+                    if ($item -is [PSCustomObject]) {
+                        "$(Get-Date) - PSCustomObject properties:" | Add-Content $debugLogFile
+                        $item.PSObject.Properties | ForEach-Object {
+                            "$(Get-Date) -   $($_.Name) = $($_.Value)" | Add-Content $debugLogFile
+                        }
+                    }
+
+                    Start-Sleep -Seconds 2
+                    continue
+                }
+
+                Write-Host "Processing: $itemFileName" -ForegroundColor Yellow
+                "$(Get-Date) - Starting to process: $itemFileName" | Add-Content $debugLogFile
+
+                    # Get file size for progress estimation - with error handling
+                    try {
+                        "$(Get-Date) - Checking file: $itemFilePath" | Add-Content $debugLogFile
+                        # Check if file exists first
+                        if (-not (Test-Path $itemFilePath)) {
+                            "$(Get-Date) - File not found!" | Add-Content $debugLogFile
+                            throw "File not found: $itemFilePath"
+                        }
+                        "$(Get-Date) - File exists" | Add-Content $debugLogFile
+
+                        $fileSize = (Get-Item $itemFilePath).Length
+                        "$(Get-Date) - File size: $fileSize" | Add-Content $debugLogFile
+                        $estimatedDurationMs = [Math]::Max(30000, [Math]::Min(300000, $fileSize / 1024 * 1000)) # 30s to 5min based on file size
+
+                        # Update status with progress tracking
+                        "$(Get-Date) - Updating status to Processing" | Add-Content $debugLogFile
+                        Update-ItemStatus $itemId @{
+                            Status            = 'Processing'
+                            StartTime         = Get-Date
+                            Progress          = 0
+                            FileSize          = $fileSize
+                            EstimatedDuration = $estimatedDurationMs
+                        }
+                        "$(Get-Date) - Status updated successfully" | Add-Content $debugLogFile
+                    } catch {
+                        "$(Get-Date) - ERROR in file check: $($_.Exception.Message)" | Add-Content $debugLogFile
+                        Write-Host "Error accessing file '$($itemFileName)': $($_.Exception.Message)" -ForegroundColor Red
+                        Update-ItemStatus $itemId @{
+                            Status = 'Failed'
+                            Error = "File access error: $($_.Exception.Message)"
+                            EndTime = Get-Date
+                        }
+                        continue  # Skip to next item in queue
+                    }
+
+                # Create output directory
+                $outputDir = Join-Path $script:DoclingSystem.OutputDirectory $itemId
+                New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+                $baseName = [System.IO.Path]::GetFileNameWithoutExtension($itemFileName)
+
+                # Determine file extension based on export format
+                $extension = switch ($itemExportFormat) {
+                    'markdown' { '.md' }
+                    'html' { '.html' }
+                    'json' { '.json' }
+                    'text' { '.txt' }
+                    'doctags' { '.xml' }
+                    default { '.md' }
+                }
+
+                $outputFile = Join-Path $outputDir "$baseName$extension"
+
+                $success = $false
+
+                # Initialize all variables to prevent $null reference issues
+                $stdout = $null
+                $stderr = $null
+                $pythonSuccess = $false
+                $outputExists = $false
+                $imagesExtracted = 0
+                $imagesDirectory = $null
+                $processCompletedNormally = $false
+                $processExitCode = -1
+                $processTerminatedEarly = $false
+                $wasCancelled = $false
+
+                try {
+                    if ($script:DoclingSystem.PythonAvailable) {
+                        # Create Python conversion script
+                        $pyScript = @"
+    import sys
+    import json
+    import re
+    import os
+    import base64
+    from pathlib import Path
+    from urllib.parse import quote
+    from datetime import datetime
+
+    try:
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.base_models import InputFormat
+        from docling_core.types.doc import ImageRefMode
+
+        src = Path(sys.argv[1])
+        dst = Path(sys.argv[2])
+        export_format = sys.argv[3] if len(sys.argv) > 3 else 'markdown'
+        embed_images = sys.argv[4].lower() == 'true' if len(sys.argv) > 4 else False
+        enrich_code = sys.argv[5].lower() == 'true' if len(sys.argv) > 5 else False
+        enrich_formula = sys.argv[6].lower() == 'true' if len(sys.argv) > 6 else False
+        enrich_picture_classes = sys.argv[7].lower() == 'true' if len(sys.argv) > 7 else False
+        enrich_picture_description = sys.argv[8].lower() == 'true' if len(sys.argv) > 8 else False
+
+        # Configure Docling for proper image extraction and enrichments
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.images_scale = 2.0  # Higher resolution images
+        pipeline_options.generate_page_images = True
+        pipeline_options.generate_picture_images = True  # Enable image extraction!
+
+        # Configure enrichments
+        pipeline_options.do_code_enrichment = enrich_code
+        pipeline_options.do_formula_enrichment = enrich_formula
+        pipeline_options.do_picture_classification = enrich_picture_classes
+        pipeline_options.do_picture_description = enrich_picture_description
+
+        # Configure Granite Vision model for picture description if enabled
+        if enrich_picture_description:
+            try:
+                from docling.datamodel.pipeline_options import granite_picture_description
+                pipeline_options.picture_description_options = granite_picture_description
+            except ImportError:
+                print("Warning: Granite Vision model not available, picture description disabled", file=sys.stderr)
+
+        print("Creating DocumentConverter...", file=sys.stderr)
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
             }
+        )
+        print(f"Starting conversion of {src}...", file=sys.stderr)
+        result = converter.convert(str(src))
+        print("Conversion completed", file=sys.stderr)
 
-            # Create output directory
-            $outputDir = Join-Path $script:DoclingSystem.OutputDirectory $item.Id
-            New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+        # Use same directory as output file for images
+        images_dir = dst.parent
+        # No need to create directory as it already exists for the output file
 
-            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($item.FileName)
+        # Helper function to save images and update references
+        def save_images_and_update_content(content, base_format='markdown'):
+            images_extracted = 0
+            vector_graphics_found = 0
+            updated_content = content
+            image_replacements = []
 
-            # Determine file extension based on export format
-            $extension = switch ($item.ExportFormat) {
-                'markdown' { '.md' }
-                'html' { '.html' }
-                'json' { '.json' }
-                'text' { '.txt' }
-                'doctags' { '.xml' }
-                default { '.md' }
-            }
+            try:
+                # Check for pictures in the document
+                if hasattr(result.document, 'pictures') and result.document.pictures:
+                    print(f"Found {len(result.document.pictures)} pictures in document", file=sys.stderr)
 
-            $outputFile = Join-Path $outputDir "$baseName$extension"
+                    for i, picture in enumerate(result.document.pictures):
+                        try:
+                            # Try to get extractable raster image
+                            pil_image = picture.get_image(result.document)
 
-            $success = $false
+                            if pil_image:
+                                # We have a raster image - extract it
+                                image_filename = f"image_{images_extracted + 1:03d}.png"
+                                image_path = images_dir / image_filename
+                                pil_image.save(str(image_path), 'PNG')
 
-            # Initialize all variables to prevent $null reference issues
-            $stdout = $null
-            $stderr = $null
-            $pythonSuccess = $false
-            $outputExists = $false
-            $imagesExtracted = 0
-            $imagesDirectory = $null
-            $processCompletedNormally = $false
-            $processExitCode = -1
-            $processTerminatedEarly = $false
-            $wasCancelled = $false
+                                # Create reference in content (just filename since in same folder)
+                                relative_path = image_filename
+                                if base_format == 'markdown':
+                                    img_reference = f"![Image {images_extracted + 1}]({relative_path})"
+                                elif base_format == 'html':
+                                    img_reference = f'<img src="{relative_path}" alt="Image {images_extracted + 1}" />'
+                                else:
+                                    img_reference = f"[Image: {relative_path}]"
 
-            try {
-                if ($script:DoclingSystem.PythonAvailable) {
-                    # Create Python conversion script
-                    $pyScript = @"
-import sys
-import json
-import re
-import os
-import base64
-from pathlib import Path
-from urllib.parse import quote
-from datetime import datetime
+                                # Store image reference for placeholder replacement
+                                image_replacements.append(img_reference)
+                                print(f"Successfully extracted raster image {images_extracted + 1} to {image_path}", file=sys.stderr)
+                                images_extracted += 1
+                            else:
+                                # This is a vector graphic or non-extractable image element
+                                vector_graphics_found += 1
 
-try:
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    from docling.datamodel.base_models import InputFormat
-    from docling_core.types.doc import ImageRefMode
+                                # Get position information if available
+                                position_info = ""
+                                if hasattr(picture, 'prov') and picture.prov:
+                                    prov = picture.prov[0]
+                                    page = prov.page_no
+                                    bbox = prov.bbox
+                                    position_info = f" (Page {page}, position {bbox.l:.0f},{bbox.t:.0f}-{bbox.r:.0f},{bbox.b:.0f})"
 
-    src = Path(sys.argv[1])
-    dst = Path(sys.argv[2])
-    export_format = sys.argv[3] if len(sys.argv) > 3 else 'markdown'
-    embed_images = sys.argv[4].lower() == 'true' if len(sys.argv) > 4 else False
-    enrich_code = sys.argv[5].lower() == 'true' if len(sys.argv) > 5 else False
-    enrich_formula = sys.argv[6].lower() == 'true' if len(sys.argv) > 6 else False
-    enrich_picture_classes = sys.argv[7].lower() == 'true' if len(sys.argv) > 7 else False
-    enrich_picture_description = sys.argv[8].lower() == 'true' if len(sys.argv) > 8 else False
+                                # Create informative placeholder
+                                if base_format == 'markdown':
+                                    placeholder = f"![Vector Graphic {vector_graphics_found}](# \"Vector graphic or logo detected{position_info}\")"
+                                elif base_format == 'html':
+                                    placeholder = f'<!-- Vector Graphic {vector_graphics_found}: Non-extractable image element{position_info} -->'
+                                else:
+                                    placeholder = f"[Vector Graphic {vector_graphics_found}: Non-extractable image element{position_info}]"
 
-    # Configure Docling for proper image extraction and enrichments
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.images_scale = 2.0  # Higher resolution images
-    pipeline_options.generate_page_images = True
-    pipeline_options.generate_picture_images = True  # Enable image extraction!
+                                # Store placeholder for replacement
+                                image_replacements.append(placeholder)
+                                print(f"Found vector graphic {vector_graphics_found}{position_info}", file=sys.stderr)
 
-    # Configure enrichments
-    pipeline_options.do_code_enrichment = enrich_code
-    pipeline_options.do_formula_enrichment = enrich_formula
-    pipeline_options.do_picture_classification = enrich_picture_classes
-    pipeline_options.do_picture_description = enrich_picture_description
+                        except Exception as img_error:
+                            print(f"Warning: Could not process picture {i + 1}: {img_error}", file=sys.stderr)
 
-    # Configure Granite Vision model for picture description if enabled
-    if enrich_picture_description:
-        try:
-            from docling.datamodel.pipeline_options import granite_picture_description
-            pipeline_options.picture_description_options = granite_picture_description
-        except ImportError:
-            print("Warning: Granite Vision model not available, picture description disabled", file=sys.stderr)
+                # Report summary
+                if images_extracted > 0:
+                    print(f"Total raster images extracted: {images_extracted}", file=sys.stderr)
+                if vector_graphics_found > 0:
+                    print(f"Total vector graphics detected: {vector_graphics_found}", file=sys.stderr)
+                if images_extracted == 0 and vector_graphics_found == 0:
+                    print("No images or graphics found in document", file=sys.stderr)
 
-    print("Creating DocumentConverter...", file=sys.stderr)
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-        }
-    )
-    print(f"Starting conversion of {src}...", file=sys.stderr)
-    result = converter.convert(str(src))
-    print("Conversion completed", file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: Image processing failed: {e}", file=sys.stderr)
 
-    # Use same directory as output file for images
-    images_dir = dst.parent
-    # No need to create directory as it already exists for the output file
+            # Replace <!-- image --> placeholders with actual image references
+            if image_replacements:
+                import re
+                replacement_index = 0
+                def replace_image_placeholder(match):
+                    nonlocal replacement_index
+                    if replacement_index < len(image_replacements):
+                        replacement = image_replacements[replacement_index]
+                        replacement_index += 1
+                        return replacement
+                    else:
+                        return "<!-- No image data available -->"
 
-    # Helper function to save images and update references
-    def save_images_and_update_content(content, base_format='markdown'):
-        images_extracted = 0
-        vector_graphics_found = 0
-        updated_content = content
-        image_replacements = []
+                # Perform the replacement
+                updated_content = re.sub(r'<!-- image -->', replace_image_placeholder, updated_content, flags=re.IGNORECASE)
+                print(f"Replaced {replacement_index} image placeholders", file=sys.stderr)
 
-        try:
-            # Check for pictures in the document
-            if hasattr(result.document, 'pictures') and result.document.pictures:
-                print(f"Found {len(result.document.pictures)} pictures in document", file=sys.stderr)
+            # Return both the content and count of actual extracted images
+            return updated_content, images_extracted
 
+        # Use Docling's native image handling based on embed_images setting
+        image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.PLACEHOLDER
+        images_extracted = 0  # Will be updated by save_images_and_update_content if extraction happens
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        # Export using our custom methods to control directory structure and filenames
+        if export_format == 'markdown':
+            if image_mode == ImageRefMode.EMBEDDED:
+                content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+                images_extracted = 0  # Images are embedded, not extracted
+            else:
+                # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+                content = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
+                content, images_extracted = save_images_and_update_content(content, 'markdown')
+            dst.write_text(content, encoding='utf-8')
+            print(f"Saved markdown with custom image handling", file=sys.stderr)
+        elif export_format == 'html':
+            if image_mode == ImageRefMode.EMBEDDED:
+                content = result.document.export_to_html(image_mode=ImageRefMode.EMBEDDED)
+                images_extracted = 0  # Images are embedded, not extracted
+            else:
+                # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
+                content = result.document.export_to_html(image_mode=ImageRefMode.PLACEHOLDER)
+                content, images_extracted = save_images_and_update_content(content, 'html')
+            dst.write_text(content, encoding='utf-8')
+            print(f"Saved HTML with custom image handling", file=sys.stderr)
+        elif export_format == 'json':
+            import json
+            # Extract images to separate files even for JSON format (unless embedding)
+            if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
                 for i, picture in enumerate(result.document.pictures):
                     try:
-                        # Try to get extractable raster image
                         pil_image = picture.get_image(result.document)
-
                         if pil_image:
-                            # We have a raster image - extract it
                             image_filename = f"image_{images_extracted + 1:03d}.png"
                             image_path = images_dir / image_filename
                             pil_image.save(str(image_path), 'PNG')
-
-                            # Create reference in content (just filename since in same folder)
-                            relative_path = image_filename
-                            if base_format == 'markdown':
-                                img_reference = f"![Image {images_extracted + 1}]({relative_path})"
-                            elif base_format == 'html':
-                                img_reference = f'<img src="{relative_path}" alt="Image {images_extracted + 1}" />'
-                            else:
-                                img_reference = f"[Image: {relative_path}]"
-
-                            # Store image reference for placeholder replacement
-                            image_replacements.append(img_reference)
-                            print(f"Successfully extracted raster image {images_extracted + 1} to {image_path}", file=sys.stderr)
+                            print(f"Extracted image {images_extracted + 1} for JSON export: {image_path}", file=sys.stderr)
                             images_extracted += 1
-                        else:
-                            # This is a vector graphic or non-extractable image element
-                            vector_graphics_found += 1
-
-                            # Get position information if available
-                            position_info = ""
-                            if hasattr(picture, 'prov') and picture.prov:
-                                prov = picture.prov[0]
-                                page = prov.page_no
-                                bbox = prov.bbox
-                                position_info = f" (Page {page}, position {bbox.l:.0f},{bbox.t:.0f}-{bbox.r:.0f},{bbox.b:.0f})"
-
-                            # Create informative placeholder
-                            if base_format == 'markdown':
-                                placeholder = f"![Vector Graphic {vector_graphics_found}](# \"Vector graphic or logo detected{position_info}\")"
-                            elif base_format == 'html':
-                                placeholder = f'<!-- Vector Graphic {vector_graphics_found}: Non-extractable image element{position_info} -->'
-                            else:
-                                placeholder = f"[Vector Graphic {vector_graphics_found}: Non-extractable image element{position_info}]"
-
-                            # Store placeholder for replacement
-                            image_replacements.append(placeholder)
-                            print(f"Found vector graphic {vector_graphics_found}{position_info}", file=sys.stderr)
-
                     except Exception as img_error:
-                        print(f"Warning: Could not process picture {i + 1}: {img_error}", file=sys.stderr)
+                        print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
 
-            # Report summary
-            if images_extracted > 0:
-                print(f"Total raster images extracted: {images_extracted}", file=sys.stderr)
-            if vector_graphics_found > 0:
-                print(f"Total vector graphics detected: {vector_graphics_found}", file=sys.stderr)
-            if images_extracted == 0 and vector_graphics_found == 0:
-                print("No images or graphics found in document", file=sys.stderr)
-
-        except Exception as e:
-            print(f"Warning: Image processing failed: {e}", file=sys.stderr)
-
-        # Replace <!-- image --> placeholders with actual image references
-        if image_replacements:
-            import re
-            replacement_index = 0
-            def replace_image_placeholder(match):
-                nonlocal replacement_index
-                if replacement_index < len(image_replacements):
-                    replacement = image_replacements[replacement_index]
-                    replacement_index += 1
-                    return replacement
-                else:
-                    return "<!-- No image data available -->"
-
-            # Perform the replacement
-            updated_content = re.sub(r'<!-- image -->', replace_image_placeholder, updated_content, flags=re.IGNORECASE)
-            print(f"Replaced {replacement_index} image placeholders", file=sys.stderr)
-
-        # Return both the content and count of actual extracted images
-        return updated_content, images_extracted
-
-    # Use Docling's native image handling based on embed_images setting
-    image_mode = ImageRefMode.EMBEDDED if embed_images else ImageRefMode.PLACEHOLDER
-    images_extracted = 0  # Will be updated by save_images_and_update_content if extraction happens
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-
-    # Export using our custom methods to control directory structure and filenames
-    if export_format == 'markdown':
-        if image_mode == ImageRefMode.EMBEDDED:
-            content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
-            images_extracted = 0  # Images are embedded, not extracted
-        else:
-            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
-            content = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
-            content, images_extracted = save_images_and_update_content(content, 'markdown')
-        dst.write_text(content, encoding='utf-8')
-        print(f"Saved markdown with custom image handling", file=sys.stderr)
-    elif export_format == 'html':
-        if image_mode == ImageRefMode.EMBEDDED:
-            content = result.document.export_to_html(image_mode=ImageRefMode.EMBEDDED)
-            images_extracted = 0  # Images are embedded, not extracted
-        else:
-            # Use PLACEHOLDER mode to get <!-- image --> placeholders we can replace
-            content = result.document.export_to_html(image_mode=ImageRefMode.PLACEHOLDER)
-            content, images_extracted = save_images_and_update_content(content, 'html')
-        dst.write_text(content, encoding='utf-8')
-        print(f"Saved HTML with custom image handling", file=sys.stderr)
-    elif export_format == 'json':
-        import json
-        # Extract images to separate files even for JSON format (unless embedding)
-        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
-            for i, picture in enumerate(result.document.pictures):
-                try:
-                    pil_image = picture.get_image(result.document)
-                    if pil_image:
-                        image_filename = f"image_{images_extracted + 1:03d}.png"
-                        image_path = images_dir / image_filename
-                        pil_image.save(str(image_path), 'PNG')
-                        print(f"Extracted image {images_extracted + 1} for JSON export: {image_path}", file=sys.stderr)
-                        images_extracted += 1
-                except Exception as img_error:
-                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
-
-        doc_dict = result.document.export_to_dict()
-        content = json.dumps(doc_dict, indent=2, ensure_ascii=False)
-        dst.write_text(content, encoding='utf-8')
-        print(f"Saved JSON (images in document structure)", file=sys.stderr)
-    elif export_format == 'text':
-        # Extract images to separate files even for text format (unless embedding)
-        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
-            for i, picture in enumerate(result.document.pictures):
-                try:
-                    pil_image = picture.get_image(result.document)
-                    if pil_image:
-                        image_filename = f"image_{images_extracted + 1:03d}.png"
-                        image_path = images_dir / image_filename
-                        pil_image.save(str(image_path), 'PNG')
-                        print(f"Extracted image {images_extracted + 1} for text export: {image_path}", file=sys.stderr)
-                        images_extracted += 1
-                except Exception as img_error:
-                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
-
-        # For text format, use markdown export and convert
-        try:
-            content = result.document.export_to_text()
-        except AttributeError:
-            # Fallback: get markdown and convert to text
-            md_content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
-
-            # Simple markdown to text conversion
-            import re
-            content = re.sub(r'[#*`_]', '', md_content)
-            content = re.sub(r'!\[(.*?)\]\(data:.*?\)', r'[Embedded Image: \1]', content)
-            content = re.sub(r'!\[(.*?)\]\((.*?)\)', r'[Image: \1 - \2]', content)
-            content = re.sub(r'\[.*?\]\((.*?)\)', r'[Link: \1]', content)
-            content = re.sub(r'\n+', '\n', content).strip()
-
-        dst.write_text(content, encoding='utf-8')
-        print(f"Saved text format", file=sys.stderr)
-    elif export_format == 'doctags':
-        import xml.etree.ElementTree as ET
-        from xml.sax.saxutils import escape
-        import json
-
-        # Extract images to separate files even for doctags format (unless embedding)
-        if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
-            for i, picture in enumerate(result.document.pictures):
-                try:
-                    pil_image = picture.get_image(result.document)
-                    if pil_image:
-                        image_filename = f"image_{images_extracted + 1:03d}.png"
-                        image_path = images_dir / image_filename
-                        pil_image.save(str(image_path), 'PNG')
-                        print(f"Extracted image {images_extracted + 1} for doctags export: {image_path}", file=sys.stderr)
-                        images_extracted += 1
-                except Exception as img_error:
-                    print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
-
-        try:
-            # Try the native export_to_doctags first
-            raw_content = result.document.export_to_doctags()
-            print(f"Raw DocTags content length: {len(raw_content)}", file=sys.stderr)
-
-            # Always wrap DocTags in proper XML structure due to known malformed output
-            # The Docling export_to_doctags produces unclosed tags which break XML parsers
-            escaped_content = escape(raw_content)
-            content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<document>
-    <metadata>
-        <source>Docling DocTags Export</source>
-        <generated>{datetime.now().isoformat()}</generated>
-    </metadata>
-    <doctags><![CDATA[{escaped_content}]]></doctags>
-</document>'''
-            print(f"Wrapped DocTags in valid XML structure", file=sys.stderr)
-        except (AttributeError, Exception) as e:
-            print(f"DocTags export failed: {e}, using fallback", file=sys.stderr)
-            # Fallback: create a proper XML representation from document structure
             doc_dict = result.document.export_to_dict()
+            content = json.dumps(doc_dict, indent=2, ensure_ascii=False)
+            dst.write_text(content, encoding='utf-8')
+            print(f"Saved JSON (images in document structure)", file=sys.stderr)
+        elif export_format == 'text':
+            # Extract images to separate files even for text format (unless embedding)
+            if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+                for i, picture in enumerate(result.document.pictures):
+                    try:
+                        pil_image = picture.get_image(result.document)
+                        if pil_image:
+                            image_filename = f"image_{images_extracted + 1:03d}.png"
+                            image_path = images_dir / image_filename
+                            pil_image.save(str(image_path), 'PNG')
+                            print(f"Extracted image {images_extracted + 1} for text export: {image_path}", file=sys.stderr)
+                            images_extracted += 1
+                    except Exception as img_error:
+                        print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
 
-            content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<document>
-    <metadata>
-        <title>{escape(str(doc_dict.get('name', 'Unknown Document')))}</title>
-        <source>Docling JSON Fallback</source>
-        <generated>{datetime.now().isoformat()}</generated>
-    </metadata>
-    <content><![CDATA[{json.dumps(doc_dict, indent=2)}]]></content>
-</document>'''
+            # For text format, use markdown export and convert
+            try:
+                content = result.document.export_to_text()
+            except AttributeError:
+                # Fallback: get markdown and convert to text
+                md_content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
 
-        dst.write_text(content, encoding='utf-8')
-        print(f"Saved doctags format", file=sys.stderr)
-    else:
-        raise ValueError(f'Unsupported export format: {export_format}')
+                # Simple markdown to text conversion
+                import re
+                content = re.sub(r'[#*`_]', '', md_content)
+                content = re.sub(r'!\[(.*?)\]\(data:.*?\)', r'[Embedded Image: \1]', content)
+                content = re.sub(r'!\[(.*?)\]\((.*?)\)', r'[Image: \1 - \2]', content)
+                content = re.sub(r'\[.*?\]\((.*?)\)', r'[Link: \1]', content)
+                content = re.sub(r'\n+', '\n', content).strip()
 
-    # Report image handling
-    if embed_images:
-        print(f"Images embedded directly in {export_format} file", file=sys.stderr)
-    else:
-        print(f"Images saved as separate files with references", file=sys.stderr)
+            dst.write_text(content, encoding='utf-8')
+            print(f"Saved text format", file=sys.stderr)
+        elif export_format == 'doctags':
+            import xml.etree.ElementTree as ET
+            from xml.sax.saxutils import escape
+            import json
 
-    print(json.dumps({
-        'success': True,
-        'format': export_format,
-        'output_file': str(dst),
-        'images_extracted': images_extracted,
-        'images_directory': str(images_dir) if images_extracted > 0 else None
-    }))
+            # Extract images to separate files even for doctags format (unless embedding)
+            if not embed_images and hasattr(result.document, 'pictures') and result.document.pictures:
+                for i, picture in enumerate(result.document.pictures):
+                    try:
+                        pil_image = picture.get_image(result.document)
+                        if pil_image:
+                            image_filename = f"image_{images_extracted + 1:03d}.png"
+                            image_path = images_dir / image_filename
+                            pil_image.save(str(image_path), 'PNG')
+                            print(f"Extracted image {images_extracted + 1} for doctags export: {image_path}", file=sys.stderr)
+                            images_extracted += 1
+                    except Exception as img_error:
+                        print(f"Warning: Could not extract image {i + 1}: {img_error}", file=sys.stderr)
 
-except Exception as e:
-    print(json.dumps({'success': False, 'error': str(e)}))
-    sys.exit(1)
+            try:
+                # Try the native export_to_doctags first
+                raw_content = result.document.export_to_doctags()
+                print(f"Raw DocTags content length: {len(raw_content)}", file=sys.stderr)
+
+                # Always wrap DocTags in proper XML structure due to known malformed output
+                # The Docling export_to_doctags produces unclosed tags which break XML parsers
+                escaped_content = escape(raw_content)
+                content = f'''<?xml version="1.0" encoding="UTF-8"?>
+    <document>
+        <metadata>
+            <source>Docling DocTags Export</source>
+            <generated>{datetime.now().isoformat()}</generated>
+        </metadata>
+        <doctags><![CDATA[{escaped_content}]]></doctags>
+    </document>'''
+                print(f"Wrapped DocTags in valid XML structure", file=sys.stderr)
+            except (AttributeError, Exception) as e:
+                print(f"DocTags export failed: {e}, using fallback", file=sys.stderr)
+                # Fallback: create a proper XML representation from document structure
+                doc_dict = result.document.export_to_dict()
+
+                content = f'''<?xml version="1.0" encoding="UTF-8"?>
+    <document>
+        <metadata>
+            <title>{escape(str(doc_dict.get('name', 'Unknown Document')))}</title>
+            <source>Docling JSON Fallback</source>
+            <generated>{datetime.now().isoformat()}</generated>
+        </metadata>
+        <content><![CDATA[{json.dumps(doc_dict, indent=2)}]]></content>
+    </document>'''
+
+            dst.write_text(content, encoding='utf-8')
+            print(f"Saved doctags format", file=sys.stderr)
+        else:
+            raise ValueError(f'Unsupported export format: {export_format}')
+
+        # Report image handling
+        if embed_images:
+            print(f"Images embedded directly in {export_format} file", file=sys.stderr)
+        else:
+            print(f"Images saved as separate files with references", file=sys.stderr)
+
+        print(json.dumps({
+            'success': True,
+            'format': export_format,
+            'output_file': str(dst),
+            'images_extracted': images_extracted,
+            'images_directory': str(images_dir) if images_extracted > 0 else None
+        }))
+
+    except Exception as e:
+        print(json.dumps({'success': False, 'error': str(e)}))
+        sys.exit(1)
 "@
 
-                    $tempPy = Join-Path $env:TEMP "docling_$([guid]::NewGuid().ToString('N')[0..7] -join '').py"
-                    $pyScript | Set-Content $tempPy -Encoding UTF8
+                        $tempPy = Join-Path $env:TEMP "docling_$([guid]::NewGuid().ToString('N')[0..7] -join '').py"
+                        $pyScript | Set-Content $tempPy -Encoding UTF8
 
-                    try {
-                        # Start Python process with timeout (10 minutes max)
-                        # Use single argument string to properly handle spaces in filenames
-                        $exportFormat = if ($item.ExportFormat) { $item.ExportFormat } else { 'markdown' }
-                        $embedImages = if ($item.EmbedImages) { 'true' } else { 'false' }
-                        $enrichCode = if ($item.EnrichCode) { 'true' } else { 'false' }
-                        $enrichFormula = if ($item.EnrichFormula) { 'true' } else { 'false' }
-                        $enrichPictureClasses = if ($item.EnrichPictureClasses) { 'true' } else { 'false' }
-                        $enrichPictureDescription = if ($item.EnrichPictureDescription) { 'true' } else { 'false' }
-                        $arguments = "`"$tempPy`" `"$($item.FilePath)`" `"$outputFile`" `"$exportFormat`" `"$embedImages`" `"$enrichCode`" `"$enrichFormula`" `"$enrichPictureClasses`" `"$enrichPictureDescription`""
-                        $process = Start-Process python -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput "$env:TEMP\docling_output.txt" -RedirectStandardError "$env:TEMP\docling_error.txt"
+                        try {
+                            # Start Python process with timeout (10 minutes max)
+                            # Use single argument string to properly handle spaces in filenames
+                            $exportFormat = if ($itemExportFormat) { $itemExportFormat } else { 'markdown' }
+                            $embedImages = if ($itemEmbedImages) { 'true' } else { 'false' }
+                            $enrichCode = if ($itemEnrichCode) { 'true' } else { 'false' }
+                            $enrichFormula = if ($itemEnrichFormula) { 'true' } else { 'false' }
+                            $enrichPictureClasses = if ($itemEnrichPictureClasses) { 'true' } else { 'false' }
+                            $enrichPictureDescription = if ($itemEnrichPictureDescription) { 'true' } else { 'false' }
+                            $arguments = "`"$tempPy`" `"$($itemFilePath)`" `"$outputFile`" `"$exportFormat`" `"$embedImages`" `"$enrichCode`" `"$enrichFormula`" `"$enrichPictureClasses`" `"$enrichPictureDescription`""
+                            $process = Start-Process python -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput "$env:TEMP\docling_output.txt" -RedirectStandardError "$env:TEMP\docling_error.txt"
 
-                        # Monitor process with progress updates
-                        $startTime = Get-Date
-                        $finished = $false
-                        $lastProgressUpdate = 0
+                            # Monitor process with progress updates
+                            $startTime = Get-Date
+                            $finished = $false
+                            $lastProgressUpdate = 0
 
-                        while (-not $process.HasExited) {
-                            Start-Sleep -Milliseconds 1000  # Check every second
-                            $elapsed = (Get-Date) - $startTime
-                            $elapsedMs = $elapsed.TotalMilliseconds
+                            while (-not $process.HasExited) {
+                                Start-Sleep -Milliseconds 1000  # Check every second
+                                $elapsed = (Get-Date) - $startTime
+                                $elapsedMs = $elapsed.TotalMilliseconds
 
-                            # Check for timeout - extended to 6 hours for large documents and AI model processing
-                            $timeoutSeconds = 21600  # 6 hours for all processing types
-                            if ($elapsed.TotalSeconds -gt $timeoutSeconds) {
-                                $timeoutHours = [Math]::Round($timeoutSeconds / 3600, 1)
-                                Write-Host "Process timeout for $($item.FileName) after $timeoutHours hours, terminating..." -ForegroundColor Yellow
-                                $processTerminatedEarly = $true
-                                try {
-                                    $process.Kill()
-                                }
-                                catch {
-                                    Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
-                                }
-                                break
-                            }
-
-                            # Check for cancellation request
-                            $currentStatus = Get-ProcessingStatus
-                            if ($currentStatus[$item.Id].CancelRequested) {
-                                Write-Host "Cancellation requested for $($item.FileName), terminating..." -ForegroundColor Yellow
-                                try {
-                                    $process.Kill()
+                                # Check for timeout - extended to 6 hours for large documents and AI model processing
+                                $timeoutSeconds = 21600  # 6 hours for all processing types
+                                if ($elapsed.TotalSeconds -gt $timeoutSeconds) {
+                                    $timeoutHours = [Math]::Round($timeoutSeconds / 3600, 1)
+                                    Write-Host "Process timeout for $($itemFileName) after $timeoutHours hours, terminating..." -ForegroundColor Yellow
                                     $processTerminatedEarly = $true
-                                }
-                                catch {
-                                    Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
-                                }
-
-                                # Delete output directory if it exists
-                                if (Test-Path $outputDir) {
-                                    Remove-Item -Path $outputDir -Recurse -Force -ErrorAction SilentlyContinue
-                                    Write-Host "Deleted output directory for cancelled document: $outputDir" -ForegroundColor Yellow
+                                    try {
+                                        $process.Kill()
+                                    }
+                                    catch {
+                                        Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
+                                    }
+                                    break
                                 }
 
-                                # Update status to Cancelled
-                                Update-ItemStatus $item.Id @{
-                                    Status    = 'Cancelled'
-                                    EndTime   = Get-Date
-                                    Error     = "Processing cancelled by user"
-                                    Progress  = 0
+                                # Check for cancellation request
+                                $currentStatus = Get-ProcessingStatus
+                                if ($currentStatus[$itemId].CancelRequested) {
+                                    Write-Host "Cancellation requested for $($itemFileName), terminating..." -ForegroundColor Yellow
+                                    try {
+                                        $process.Kill()
+                                        $processTerminatedEarly = $true
+                                    }
+                                    catch {
+                                        Write-Host "Could not kill process: $($_.Exception.Message)" -ForegroundColor Red
+                                    }
+
+                                    # Delete output directory if it exists
+                                    if (Test-Path $outputDir) {
+                                        Remove-Item -Path $outputDir -Recurse -Force -ErrorAction SilentlyContinue
+                                        Write-Host "Deleted output directory for cancelled document: $outputDir" -ForegroundColor Yellow
+                                    }
+
+                                    # Update status to Cancelled
+                                    Update-ItemStatus $itemId @{
+                                        Status    = 'Cancelled'
+                                        EndTime   = Get-Date
+                                        Error     = "Processing cancelled by user"
+                                        Progress  = 0
+                                    }
+
+                                    # Set flag to skip error handling
+                                    $wasCancelled = $true
+
+                                    # Skip to next queue item - do not continue to error handling
+                                    break
                                 }
 
-                                # Set flag to skip error handling
-                                $wasCancelled = $true
+                                # Check for early Python completion/failure by examining output files
+                                $outputFileExists = Test-Path "$env:TEMP\docling_output.txt" -ErrorAction SilentlyContinue
+                                if ($outputFileExists) {
+                                    $stdout = Get-Content "$env:TEMP\docling_output.txt" -Raw -ErrorAction SilentlyContinue
+                                    if ($stdout) {
+                                        try {
+                                            $jsonResult = $stdout | ConvertFrom-Json
+                                            if ($jsonResult.success -eq $true -or $jsonResult.success -eq $false) {
+                                                # Python has finished (either success or failure) - break out of monitoring
+                                                Write-Host "Python process completed, breaking monitoring loop..." -ForegroundColor Green
+                                                break
+                                            }
+                                        }
+                                        catch {
+                                            # Ignore JSON parsing errors, continue monitoring
+                                        }
+                                    }
+                                }
 
-                                # Skip to next queue item - do not continue to error handling
-                                break
+                                # Calculate and update progress with guards - improved progress calculation for AI enrichments
+                                if ($itemEnrichPictureDescription) {
+                                    # Picture Description (Granite Vision) - smooth linear progress
+                                    if ($elapsed.TotalSeconds -lt 300) {
+                                        # First 5 minutes: Model download/loading - progress to 25%
+                                        $progress = ($elapsed.TotalSeconds / 300.0) * 25.0
+                                    } elseif ($elapsed.TotalSeconds -lt 1800) {
+                                        # Next 25 minutes: Main processing - 25% to 90%
+                                        $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 1500.0) * 65.0
+                                    } else {
+                                        # Final phase: continue linear progress to 95%, then hold
+                                        $remainingTime = 21600.0 - 1800.0  # 6 hours - 30 minutes
+                                        $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1800.0) / $remainingTime) * 5.0)
+                                    }
+                                } elseif ($itemEnrichCode -or $itemEnrichFormula) {
+                                    # Code/Formula Understanding (CodeFormulaV2) - smooth linear progress
+                                    if ($elapsed.TotalSeconds -lt 180) {
+                                        # First 3 minutes: Model download/loading - progress to 20%
+                                        $progress = ($elapsed.TotalSeconds / 180.0) * 20.0
+                                    } elseif ($elapsed.TotalSeconds -lt 1200) {
+                                        # Next 17 minutes: Main processing - 20% to 90%
+                                        $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 1020.0) * 70.0
+                                    } else {
+                                        # Final phase: continue linear progress to 95%, then hold
+                                        $remainingTime = 21600.0 - 1200.0  # 6 hours - 20 minutes
+                                        $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1200.0) / $remainingTime) * 5.0)
+                                    }
+                                } elseif ($estimatedDurationMs -gt 0) {
+                                    $progress = [Math]::Min(95.0, ([double]($elapsedMs) / [double]($estimatedDurationMs)) * 100.0)
+                                }
+                                else {
+                                    $progress = [Math]::Min(95.0, ([double]($elapsedMs) / 60000.0) * 100.0)
+                                }
+
+                                # Only update if progress changed significantly
+                                if ([Math]::Abs($progress - $lastProgressUpdate) -gt 1.0) {
+                                    Update-ItemStatus $itemId @{
+                                        Progress    = [Math]::Round($progress, 1)
+                                        ElapsedTime = $elapsedMs
+                                        LastUpdate  = Get-Date
+                                    }
+                                    $lastProgressUpdate = $progress
+                                }
                             }
 
-                            # Check for early Python completion/failure by examining output files
-                            $outputFileExists = Test-Path "$env:TEMP\docling_output.txt" -ErrorAction SilentlyContinue
-                            if ($outputFileExists) {
+                            # Process has exited - wait for file writes to complete
+                            Start-Sleep -Milliseconds 500
+
+                            $finished = $true
+
+                            if ($finished -and -not $wasCancelled) {
+                                # Process has exited - now check results AFTER process completion
+                                # Wait for process to fully exit before accessing ExitCode
+                                if (-not $process.HasExited) {
+                                    try {
+                                        # Wait up to 5 seconds for process to fully exit
+                                        $process.WaitForExit(5000) | Out-Null
+                                    }
+                                    catch {
+                                        Write-Warning "Failed to wait for process exit: $($_.Exception.Message)"
+                                    }
+                                }
+
+                                # Now safely access ExitCode
+                                if ($process.HasExited) {
+                                    $processExitCode = $process.ExitCode
+                                    $processCompletedNormally = $true
+                                }
+                                else {
+                                    $processExitCode = -1
+                                    $processCompletedNormally = $false
+                                }
+
+                                # Read output files after process completion
                                 $stdout = Get-Content "$env:TEMP\docling_output.txt" -Raw -ErrorAction SilentlyContinue
+                                $stderr = Get-Content "$env:TEMP\docling_error.txt" -Raw -ErrorAction SilentlyContinue
+
+                                # Check for success in Python output
+                                $pythonSuccess = $false
                                 if ($stdout) {
                                     try {
                                         $jsonResult = $stdout | ConvertFrom-Json
-                                        if ($jsonResult.success -eq $true -or $jsonResult.success -eq $false) {
-                                            # Python has finished (either success or failure) - break out of monitoring
-                                            Write-Host "Python process completed, breaking monitoring loop..." -ForegroundColor Green
-                                            break
+                                        $pythonSuccess = $jsonResult.success -eq $true
+                                        if ($jsonResult.images_extracted) {
+                                            $imagesExtracted = $jsonResult.images_extracted
+                                        }
+                                        if ($jsonResult.images_directory) {
+                                            $imagesDirectory = $jsonResult.images_directory
                                         }
                                     }
                                     catch {
-                                        # Ignore JSON parsing errors, continue monitoring
+                                        # Fallback to regex check
+                                        $pythonSuccess = $stdout -match '"success".*true'
                                     }
                                 }
+
+                                # Check if output file exists and has content
+                                $outputExists = (Test-Path $outputFile -ErrorAction SilentlyContinue) -and
+                                ((Get-Item $outputFile -ErrorAction SilentlyContinue).Length -gt 0)
+
+                                # Determine success based on Python results and output
+                                if ($pythonSuccess -and $outputExists) {
+                                    $success = $true
+                                }
+                                elseif ($processCompletedNormally -and ($processExitCode -eq 0) -and $outputExists) {
+                                    $success = $true
+                                }
+                                else {
+                                    $success = $false
+                                    $errorMsg = "Document processing failed"
+                                    if (-not $processCompletedNormally) {
+                                        $errorMsg += " - Process did not complete normally"
+                                    }
+                                    if ($processExitCode -ne 0) {
+                                        $errorMsg += " - Exit code: $processExitCode"
+                                    }
+                                    if ($stderr) {
+                                        $errorMsg += " - Python error: $($stderr.Substring(0, [Math]::Min(500, $stderr.Length)))"
+                                    }
+                                    throw $errorMsg
+                                }
                             }
 
-                            # Calculate and update progress with guards - improved progress calculation for AI enrichments
-                            if ($item.EnrichPictureDescription) {
-                                # Picture Description (Granite Vision) - smooth linear progress
-                                if ($elapsed.TotalSeconds -lt 300) {
-                                    # First 5 minutes: Model download/loading - progress to 25%
-                                    $progress = ($elapsed.TotalSeconds / 300.0) * 25.0
-                                } elseif ($elapsed.TotalSeconds -lt 1800) {
-                                    # Next 25 minutes: Main processing - 25% to 90%
-                                    $progress = 25.0 + (($elapsed.TotalSeconds - 300.0) / 1500.0) * 65.0
-                                } else {
-                                    # Final phase: continue linear progress to 95%, then hold
-                                    $remainingTime = 21600.0 - 1800.0  # 6 hours - 30 minutes
-                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1800.0) / $remainingTime) * 5.0)
-                                }
-                            } elseif ($item.EnrichCode -or $item.EnrichFormula) {
-                                # Code/Formula Understanding (CodeFormulaV2) - smooth linear progress
-                                if ($elapsed.TotalSeconds -lt 180) {
-                                    # First 3 minutes: Model download/loading - progress to 20%
-                                    $progress = ($elapsed.TotalSeconds / 180.0) * 20.0
-                                } elseif ($elapsed.TotalSeconds -lt 1200) {
-                                    # Next 17 minutes: Main processing - 20% to 90%
-                                    $progress = 20.0 + (($elapsed.TotalSeconds - 180.0) / 1020.0) * 70.0
-                                } else {
-                                    # Final phase: continue linear progress to 95%, then hold
-                                    $remainingTime = 21600.0 - 1200.0  # 6 hours - 20 minutes
-                                    $progress = 90.0 + [Math]::Min(5.0, (($elapsed.TotalSeconds - 1200.0) / $remainingTime) * 5.0)
-                                }
-                            } elseif ($estimatedDurationMs -gt 0) {
-                                $progress = [Math]::Min(95.0, ([double]($elapsedMs) / [double]($estimatedDurationMs)) * 100.0)
-                            }
-                            else {
-                                $progress = [Math]::Min(95.0, ([double]($elapsedMs) / 60000.0) * 100.0)
-                            }
+                            # Clean up temp files
+                            Remove-Item "$env:TEMP\docling_output.txt" -Force -ErrorAction SilentlyContinue
+                            Remove-Item "$env:TEMP\docling_error.txt" -Force -ErrorAction SilentlyContinue
 
-                            # Only update if progress changed significantly
-                            if ([Math]::Abs($progress - $lastProgressUpdate) -gt 1.0) {
-                                Update-ItemStatus $item.Id @{
-                                    Progress    = [Math]::Round($progress, 1)
-                                    ElapsedTime = $elapsedMs
-                                    LastUpdate  = Get-Date
-                                }
-                                $lastProgressUpdate = $progress
-                            }
                         }
-
-                        # Process has exited - wait for file writes to complete
-                        Start-Sleep -Milliseconds 500
-
-                        $finished = $true
-
-                        if ($finished -and -not $wasCancelled) {
-                            # Process has exited - now check results AFTER process completion
-                            # Wait for process to fully exit before accessing ExitCode
-                            if (-not $process.HasExited) {
-                                try {
-                                    # Wait up to 5 seconds for process to fully exit
-                                    $process.WaitForExit(5000) | Out-Null
-                                }
-                                catch {
-                                    Write-Warning "Failed to wait for process exit: $($_.Exception.Message)"
-                                }
-                            }
-
-                            # Now safely access ExitCode
-                            if ($process.HasExited) {
-                                $processExitCode = $process.ExitCode
-                                $processCompletedNormally = $true
-                            }
-                            else {
-                                $processExitCode = -1
-                                $processCompletedNormally = $false
-                            }
-
-                            # Read output files after process completion
-                            $stdout = Get-Content "$env:TEMP\docling_output.txt" -Raw -ErrorAction SilentlyContinue
-                            $stderr = Get-Content "$env:TEMP\docling_error.txt" -Raw -ErrorAction SilentlyContinue
-
-                            # Check for success in Python output
-                            $pythonSuccess = $false
-                            if ($stdout) {
-                                try {
-                                    $jsonResult = $stdout | ConvertFrom-Json
-                                    $pythonSuccess = $jsonResult.success -eq $true
-                                    if ($jsonResult.images_extracted) {
-                                        $imagesExtracted = $jsonResult.images_extracted
-                                    }
-                                    if ($jsonResult.images_directory) {
-                                        $imagesDirectory = $jsonResult.images_directory
-                                    }
-                                }
-                                catch {
-                                    # Fallback to regex check
-                                    $pythonSuccess = $stdout -match '"success".*true'
-                                }
-                            }
-
-                            # Check if output file exists and has content
-                            $outputExists = (Test-Path $outputFile -ErrorAction SilentlyContinue) -and
-                            ((Get-Item $outputFile -ErrorAction SilentlyContinue).Length -gt 0)
-
-                            # Determine success based on Python results and output
-                            if ($pythonSuccess -and $outputExists) {
-                                $success = $true
-                            }
-                            elseif ($processCompletedNormally -and ($processExitCode -eq 0) -and $outputExists) {
-                                $success = $true
-                            }
-                            else {
-                                $success = $false
-                                $errorMsg = "Document processing failed"
-                                if (-not $processCompletedNormally) {
-                                    $errorMsg += " - Process did not complete normally"
-                                }
-                                if ($processExitCode -ne 0) {
-                                    $errorMsg += " - Exit code: $processExitCode"
-                                }
-                                if ($stderr) {
-                                    $errorMsg += " - Python error: $($stderr.Substring(0, [Math]::Min(500, $stderr.Length)))"
-                                }
-                                throw $errorMsg
-                            }
+                        finally {
+                            Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
                         }
-
-                        # Clean up temp files
-                        Remove-Item "$env:TEMP\docling_output.txt" -Force -ErrorAction SilentlyContinue
-                        Remove-Item "$env:TEMP\docling_error.txt" -Force -ErrorAction SilentlyContinue
-
                     }
-                    finally {
-                        Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
+                    else {
+                        # Simulation mode - properly initialize variables
+                        Update-ItemStatus $itemId @{
+                            Status = 'Processing'
+                            StartTime = Get-Date
+                            Progress = 10
+                        }
+                        Start-Sleep 2
+                        "Simulated conversion of: $($itemFileName)`nGenerated at: $(Get-Date)" | Set-Content $outputFile -Encoding UTF8
+                        $success = $true
+                        $processCompletedNormally = $true
+                        $processExitCode = 0
+                        $pythonSuccess = $true
+                        $outputExists = Test-Path $outputFile -ErrorAction SilentlyContinue
+                        $imagesExtracted = 0
+                        $imagesDirectory = $null
                     }
-                }
-                else {
-                    # Simulation mode - properly initialize variables
-                    Start-Sleep 2
-                    "Simulated conversion of: $($item.FileName)`nGenerated at: $(Get-Date)" | Set-Content $outputFile -Encoding UTF8
-                    $success = $true
-                    $processCompletedNormally = $true
-                    $processExitCode = 0
-                    $pythonSuccess = $true
-                    $outputExists = Test-Path $outputFile -ErrorAction SilentlyContinue
-                    $imagesExtracted = 0
-                    $imagesDirectory = $null
-                }
 
                 if ($success) {
                     # Initialize status update but don't mark as completed yet
@@ -4895,17 +5081,17 @@ except Exception as e:
 
                     # Track which enhancements need to run
                     $enhancementsToRun = @()
-                    if ($item.EnableChunking) { $enhancementsToRun += 'Chunking' }
+                    if ($itemEnableChunking) { $enhancementsToRun += 'Chunking' }
 
                     # Add image extraction info if available
                     if ($imagesExtracted -gt 0) {
                         $statusUpdate.ImagesExtracted = $imagesExtracted
                         # Images are now in same folder as output file
                         $statusUpdate.ImagesDirectory = Split-Path $outputFile -Parent
-                        Write-Host "Base conversion completed: $($item.FileName) ($imagesExtracted images extracted)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($itemFileName) ($imagesExtracted images extracted)" -ForegroundColor Green
                     }
                     else {
-                        Write-Host "Base conversion completed: $($item.FileName)" -ForegroundColor Green
+                        Write-Host "Base conversion completed: $($itemFileName)" -ForegroundColor Green
                     }
 
                     # Calculate progress increment for each enhancement
@@ -4913,12 +5099,12 @@ except Exception as e:
                     $currentProgress = 50
 
                     # Process chunking if enabled
-                    if ($item.EnableChunking -and $outputFile) {
+                    if ($itemEnableChunking -and $outputFile) {
                         try {
-                            Write-Host "Starting hybrid chunking for $($item.FileName)..." -ForegroundColor Yellow
+                            Write-Host "Starting hybrid chunking for $($itemFileName)..." -ForegroundColor Yellow
 
                             # Update status to show chunking in progress
-                            Update-ItemStatus $item.Id @{
+                            Update-ItemStatus $itemId @{
                                 Status = 'Processing'
                                 Progress = $currentProgress
                                 EnhancementsInProgress = $true
@@ -4928,39 +5114,39 @@ except Exception as e:
                             # Build chunking parameters
                             # Use the original source file for chunking, not the converted output
                             $chunkParams = @{
-                                InputPath = $item.FilePath  # Use original document
-                                TokenizerBackend = $item.ChunkTokenizerBackend
-                                MaxTokens = $item.ChunkMaxTokens
-                                MergePeers = $item.ChunkMergePeers
-                                TableSerialization = $item.ChunkTableSerialization
-                                PictureStrategy = $item.ChunkPictureStrategy
+                                InputPath = $itemFilePath  # Use original document
+                                TokenizerBackend = $itemChunkTokenizerBackend
+                                MaxTokens = $itemChunkMaxTokens
+                                MergePeers = $itemChunkMergePeers
+                                TableSerialization = $itemChunkTableSerialization
+                                PictureStrategy = $itemChunkPictureStrategy
                             }
 
-                            if ($item.ChunkTokenizerBackend -eq 'hf') {
-                                $chunkParams.TokenizerModel = $item.ChunkTokenizerModel
+                            if ($itemChunkTokenizerBackend -eq 'hf') {
+                                $chunkParams.TokenizerModel = $itemChunkTokenizerModel
                             } else {
-                                $chunkParams.OpenAIModel = $item.ChunkOpenAIModel
+                                $chunkParams.OpenAIModel = $itemChunkOpenAIModel
                             }
 
-                            if ($item.ChunkIncludeContext) {
+                            if ($itemChunkIncludeContext) {
                                 $chunkParams.IncludeContext = $true
                             }
 
                             # Add advanced parameters if present
-                            if ($item.ChunkImagePlaceholder) {
-                                $chunkParams.ImagePlaceholder = $item.ChunkImagePlaceholder
+                            if ($itemChunkImagePlaceholder) {
+                                $chunkParams.ImagePlaceholder = $itemChunkImagePlaceholder
                             }
-                            if ($item.ChunkOverlapTokens) {
-                                $chunkParams.OverlapTokens = $item.ChunkOverlapTokens
+                            if ($itemChunkOverlapTokens) {
+                                $chunkParams.OverlapTokens = $itemChunkOverlapTokens
                             }
-                            if ($item.ChunkPreserveSentences) {
+                            if ($itemChunkPreserveSentences) {
                                 $chunkParams.PreserveSentenceBoundaries = $true
                             }
-                            if ($item.ChunkPreserveCode) {
+                            if ($itemChunkPreserveCode) {
                                 $chunkParams.PreserveCodeBlocks = $true
                             }
-                            if ($item.ChunkModelPreset) {
-                                $chunkParams.ModelPreset = $item.ChunkModelPreset
+                            if ($itemChunkModelPreset) {
+                                $chunkParams.ModelPreset = $itemChunkModelPreset
                             }
 
                             # Generate chunks output path in the same directory as the converted file
@@ -4998,8 +5184,12 @@ except Exception as e:
                     $statusUpdate.EnhancementsInProgress = $false
                     $statusUpdate.ActiveEnhancements = @()
 
-                    Write-Host "All processing completed for: $($item.FileName)" -ForegroundColor Green
-                    Update-ItemStatus $item.Id $statusUpdate
+                    # Add missing status fields for completion
+                    $statusUpdate.Status = 'Completed'
+                    $statusUpdate.EndTime = Get-Date
+
+                    Write-Host "All processing completed for: $($itemFileName)" -ForegroundColor Green
+                    Update-ItemStatus $itemId $statusUpdate
                 }
                 else {
                     # Provide more detailed error information
@@ -5038,7 +5228,7 @@ except Exception as e:
                 }
                 catch { }
 
-                Update-ItemStatus $item.Id @{
+                Update-ItemStatus $itemId @{
                     Status       = 'Error'
                     Error        = $_.Exception.Message
                     ErrorDetails = $errorDetails
@@ -5046,13 +5236,20 @@ except Exception as e:
                     EndTime      = Get-Date
                     Progress     = 0
                 }
-                Write-Host "Error processing $($item.FileName): $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "Error processing $($itemFileName): $($_.Exception.Message)" -ForegroundColor Red
             }
+            } # End of if ($item) block
+        } catch {
+            # Log any uncaught errors in the main loop
+            $errorMsg = "$(Get-Date) - ERROR in main loop: $($_.Exception.Message)`nStack: $($_.ScriptStackTrace)"
+            $errorMsg | Add-Content $errorLogFile
+            Write-Host "ERROR in processor loop: $($_.Exception.Message)" -ForegroundColor Red
         }
 
         Start-Sleep 2
     }
 }
+
 
 
 # Public: Clear-PSDoclingSystem
@@ -5074,14 +5271,27 @@ Function Clear-PSDoclingSystem {
         }
     }
 
-    # Clear the queue file
+    # Clear the queue folder (new folder-based queue)
+    $queueFolder = "$env:TEMP\DoclingQueue"
+    if (Test-Path $queueFolder) {
+        $queueCount = (Get-ChildItem $queueFolder -Filter "*.queue" -ErrorAction SilentlyContinue).Count
+        if ($queueCount -gt 0) {
+            Remove-Item "$queueFolder\*.queue" -Force
+            Write-Host "Cleared $queueCount items from queue folder" -ForegroundColor Green
+        }
+        else {
+            Write-Host "Queue folder is already empty" -ForegroundColor Gray
+        }
+    }
+    else {
+        Write-Host "Queue folder doesn't exist" -ForegroundColor Gray
+    }
+
+    # Clear the old JSON queue file (for backwards compatibility)
     $queueFile = "$env:TEMP\docling_queue.json"
     if (Test-Path $queueFile) {
         "[]" | Set-Content $queueFile -Encoding UTF8
-        Write-Host "Cleared queue file" -ForegroundColor Green
-    }
-    else {
-        Write-Host "Queue file doesn't exist" -ForegroundColor Gray
+        Write-Host "Cleared old queue file" -ForegroundColor Green
     }
 
     # Clear the status file
@@ -5340,7 +5550,7 @@ Start-DocumentProcessor
 }
 
 
-Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Optimize-ChunksForRAG', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Get-NextQueueItem', 'Get-QueueItems', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem')
+Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Optimize-ChunksForRAG', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Add-QueueItemFolder', 'Get-NextQueueItem', 'Get-NextQueueItemFolder', 'Get-QueueItems', 'Get-QueueItemsFolder', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem')
 
 Write-Host 'PSDocling Module Loaded - Version 3.1.0' -ForegroundColor Cyan
 

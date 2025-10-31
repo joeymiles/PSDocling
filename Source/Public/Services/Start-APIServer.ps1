@@ -49,7 +49,7 @@ function Start-APIServer {
                     }
 
                     '^/api/status$' {
-                        $queue = Get-QueueItems
+                        $queue = Get-QueueItemsFolder
                         $allStatus = Get-ProcessingStatus
                         $queued = $allStatus.Values | Where-Object { $_.Status -eq 'Queued' }
                         $processing = $allStatus.Values | Where-Object { $_.Status -eq 'Processing' }

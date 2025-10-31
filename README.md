@@ -29,7 +29,7 @@ The system uses a multi-process architecture:
 - **API Server**: REST endpoints for document submission and status queries
 - **Document Processor**: Background service that converts queued documents
 - **Web Frontend**: Single-page application for file upload and management
-- **Queue Management**: JSON-based persistence for cross-process communication
+- **Queue Management**: Folder-based queue system for reliable cross-process communication
 
 ## 📋 Requirements
 
@@ -112,7 +112,7 @@ For programmatic access, see the [Backend Services Guide](Help_files/01_Backend_
 ```
 
 ### File Locations
-- **Queue**: `$env:TEMP\docling_queue.json`
+- **Queue Folder**: `$env:TEMP\DoclingQueue` (folder-based queue system)
 - **Status**: `$env:TEMP\docling_status.json`
 - **Temp Directory**: `$env:TEMP\DoclingProcessor`
 - **Output Directory**: `.\ProcessedDocuments`

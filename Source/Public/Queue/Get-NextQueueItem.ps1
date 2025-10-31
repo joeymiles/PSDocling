@@ -21,7 +21,13 @@ function Get-NextQueueItem {
             try {
                 $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
-                    $queue = @($content | ConvertFrom-Json)
+                    $parsed = $content | ConvertFrom-Json
+                    # Don't double-wrap arrays
+                    if ($parsed -is [array]) {
+                        $queue = $parsed
+                    } else {
+                        $queue = @($parsed)
+                    }
                 }
             }
             catch {
@@ -30,6 +36,11 @@ function Get-NextQueueItem {
         }
 
         if ($queue.Count -gt 0) {
+            # Ensure we're working with an array
+            if ($queue -isnot [array]) {
+                $queue = @($queue)
+            }
+
             $nextItem = $queue[0]
             $remaining = if ($queue.Count -gt 1) { $queue[1..($queue.Count - 1)] } else { @() }
 

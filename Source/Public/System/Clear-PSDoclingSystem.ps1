@@ -25,14 +25,27 @@ Function Clear-PSDoclingSystem {
         }
     }
 
-    # Clear the queue file
+    # Clear the queue folder (new folder-based queue)
+    $queueFolder = "$env:TEMP\DoclingQueue"
+    if (Test-Path $queueFolder) {
+        $queueCount = (Get-ChildItem $queueFolder -Filter "*.queue" -ErrorAction SilentlyContinue).Count
+        if ($queueCount -gt 0) {
+            Remove-Item "$queueFolder\*.queue" -Force
+            Write-Host "Cleared $queueCount items from queue folder" -ForegroundColor Green
+        }
+        else {
+            Write-Host "Queue folder is already empty" -ForegroundColor Gray
+        }
+    }
+    else {
+        Write-Host "Queue folder doesn't exist" -ForegroundColor Gray
+    }
+
+    # Clear the old JSON queue file (for backwards compatibility)
     $queueFile = "$env:TEMP\docling_queue.json"
     if (Test-Path $queueFile) {
         "[]" | Set-Content $queueFile -Encoding UTF8
-        Write-Host "Cleared queue file" -ForegroundColor Green
-    }
-    else {
-        Write-Host "Queue file doesn't exist" -ForegroundColor Gray
+        Write-Host "Cleared old queue file" -ForegroundColor Green
     }
 
     # Clear the status file

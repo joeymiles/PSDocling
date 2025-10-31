@@ -23,7 +23,13 @@ function Add-QueueItem {
             try {
                 $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
-                    $queue = @($content | ConvertFrom-Json)
+                    $parsed = $content | ConvertFrom-Json
+                    # Ensure we get an array
+                    if ($parsed -is [array]) {
+                        $queue = $parsed
+                    } else {
+                        $queue = @($parsed)
+                    }
                 }
             }
             catch {
@@ -31,16 +37,21 @@ function Add-QueueItem {
             }
         }
 
-        # Add new item
-        $newQueue = @($queue) + @($localItem)
+        # Add new item - ensure both are arrays before concatenating
+        $queue = @($queue)
+        $newQueue = $queue + $localItem
 
-        # Write back atomically
+        # Write back atomically - ALWAYS force as an array with explicit formatting
         $tempFile = "$localQueueFile.tmp"
-        if ($newQueue.Count -eq 1) {
+        if ($newQueue.Count -eq 0) {
+            "[]" | Set-Content $tempFile -Encoding UTF8
+        }
+        elseif ($newQueue.Count -eq 1) {
+            # Force single item to be an array in JSON
             "[" + ($newQueue[0] | ConvertTo-Json -Depth 10 -Compress) + "]" | Set-Content $tempFile -Encoding UTF8
         }
         else {
-            $newQueue | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
+            @($newQueue) | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
         }
         Move-Item -Path $tempFile -Destination $localQueueFile -Force
     }.GetNewClosure()

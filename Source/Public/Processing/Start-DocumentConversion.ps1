@@ -61,41 +61,8 @@ function Start-DocumentConversion {
         $documentStatus.ExportFormat = $ExportFormat
     }
 
-    # Create queue item for processing
-    $queueItem = @{
-        Id                       = $DocumentId
-        FilePath                 = $documentStatus.FilePath
-        FileName                 = $documentStatus.FileName
-        ExportFormat             = $documentStatus.ExportFormat
-        EmbedImages              = $EmbedImages.IsPresent
-        EnrichCode               = $EnrichCode.IsPresent
-        EnrichFormula            = $EnrichFormula.IsPresent
-        EnrichPictureClasses     = $EnrichPictureClasses.IsPresent
-        EnrichPictureDescription = $EnrichPictureDescription.IsPresent
-
-        # Chunking Options
-        EnableChunking           = $EnableChunking.IsPresent
-        ChunkTokenizerBackend    = $ChunkTokenizerBackend
-        ChunkTokenizerModel      = $ChunkTokenizerModel
-        ChunkOpenAIModel         = $ChunkOpenAIModel
-        ChunkMaxTokens           = $ChunkMaxTokens
-        ChunkMergePeers          = $ChunkMergePeers
-        ChunkIncludeContext      = $ChunkIncludeContext.IsPresent
-        ChunkTableSerialization  = $ChunkTableSerialization
-        ChunkPictureStrategy     = $ChunkPictureStrategy
-        ChunkImagePlaceholder    = $ChunkImagePlaceholder
-        ChunkOverlapTokens       = $ChunkOverlapTokens
-        ChunkPreserveSentences   = $ChunkPreserveSentences.IsPresent
-        ChunkPreserveCode        = $ChunkPreserveCode.IsPresent
-        ChunkModelPreset         = $ChunkModelPreset
-
-        Status                   = 'Queued'
-        QueuedTime               = Get-Date
-        UploadedTime             = $documentStatus.UploadedTime
-    }
-
-    # Add to processing queue and update status
-    Add-QueueItem $queueItem
+    # Use folder-based queue - much simpler!
+    Add-QueueItemFolder $DocumentId
     Update-ItemStatus $DocumentId @{
         Status                   = 'Queued'
         QueuedTime               = Get-Date

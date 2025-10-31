@@ -38,7 +38,7 @@ Or use the convenience script:
 - **API Server**: `http://localhost:8080`
 - **Document Processor**: Background service (no direct access)
 - **Status Files**: Located in `$env:TEMP`
-  - Queue: `$env:TEMP\docling_queue.json`
+  - Queue Folder: `$env:TEMP\DoclingQueue` (folder-based queue system)
   - Status: `$env:TEMP\docling_status.json`
 
 ### Starting Individual Services
@@ -271,4 +271,4 @@ Remove-Item "$env:TEMP\DoclingProcessor" -Recurse -Force -ErrorAction SilentlyCo
 Check debug files when troubleshooting:
 - Python errors: `Get-Content "$env:TEMP\docling_error.txt"`
 - Python output: `Get-Content "$env:TEMP\docling_output.txt"`
-- Queue status: `Get-Content "$env:TEMP\docling_queue.json" | ConvertFrom-Json | Format-List`
+- Queue status: `Get-ChildItem "$env:TEMP\DoclingQueue" -Filter "*.queue" | Sort-Object CreationTime`

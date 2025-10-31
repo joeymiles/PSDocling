@@ -74,9 +74,9 @@ PSDocling is a multi-process PowerShell-based document conversion system that wr
 
 ### Inter-Process Communication
 
-- **Queue File**: `$env:TEMP\docling_queue.json` - Documents waiting for processing
+- **Queue Folder**: `$env:TEMP\DoclingQueue` - Folder-based queue with timestamped `.queue` files
 - **Status File**: `$env:TEMP\docling_status.json` - Current state of all documents
-- **File Mutex**: Used by `Use-FileMutex` to prevent race conditions on shared JSON files
+- **File-Based Queue**: Each queued document creates a separate file, eliminating JSON serialization issues
 
 ### Key Data Flow
 
@@ -203,7 +203,7 @@ The module maintains state in `$script:DoclingSystem` hashtable:
     WebPort = 8081
     TempDirectory = "$env:TEMP\DoclingProcessor"
     OutputDirectory = ".\ProcessedDocuments"
-    QueuePath = "$env:TEMP\docling_queue.json"
+    QueueFolder = "$env:TEMP\DoclingQueue"
     StatusPath = "$env:TEMP\docling_status.json"
 }
 ```

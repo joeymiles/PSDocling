@@ -27,6 +27,7 @@
     FunctionsToExport = @(
         'Initialize-DoclingSystem',
         'Start-DoclingSystem',
+        'Stop-DoclingSystem',
         'Add-DocumentToQueue',
         'Start-DocumentProcessor',
         'Start-APIServer',

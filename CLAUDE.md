@@ -167,6 +167,22 @@ This sets `$script:DoclingSystem.PythonAvailable = $false` and generates mock ou
 
 ## Common Development Tasks
 
+### Programmatically Starting/Stopping the System
+
+```powershell
+# Import module
+Import-Module .\Build\PSDocling.psm1 -Force
+
+# Start system
+Start-DoclingSystem -GenerateFrontend -OpenBrowser
+
+# Stop system (processes only)
+Stop-DoclingSystem
+
+# Stop system and clear queue
+Stop-DoclingSystem -ClearQueue
+```
+
 ### Adding a New Public Function
 1. Create file in `Source/Public/<Category>/New-Function.ps1`
 2. Add function name to `FunctionsToExport` in `PSDocling.psd1`

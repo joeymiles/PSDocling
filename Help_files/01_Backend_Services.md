@@ -220,14 +220,13 @@ while ($true) {
 ### Graceful Shutdown
 
 ```powershell
-# Stop all services
+# Method 1: Using the convenience script
 .\Stop-All.ps1
 
-# Or manually
-Stop-Process -Name powershell -Force | Where-Object {
-    $_.CommandLine -like "*Start-APIServer*" -or
-    $_.CommandLine -like "*Start-DocumentProcessor*"
-}
+# Method 2: Using the module function
+Import-Module PSDocling
+Stop-DoclingSystem              # Stop processes only
+Stop-DoclingSystem -ClearQueue  # Stop and clear queue
 ```
 
 ### Cleanup

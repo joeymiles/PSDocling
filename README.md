@@ -67,9 +67,28 @@ cd PSDocling
 ```powershell
 # Start all services with web interface
 .\Start-All.ps1 -GenerateFrontend -OpenBrowser
+
+# Stop all services
+.\Stop-All.ps1
 ```
 
 The web interface will open automatically at `http://localhost:8081`
+
+### Programmatic Control
+
+```powershell
+# Import the module
+Import-Module PSDocling
+
+# Start the system
+Start-DoclingSystem -GenerateFrontend -OpenBrowser
+
+# Stop the system (processes only)
+Stop-DoclingSystem
+
+# Stop and clear queue
+Stop-DoclingSystem -ClearQueue
+```
 
 ### 🌐 Web Interface
 

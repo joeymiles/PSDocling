@@ -18,9 +18,10 @@ function Start-DoclingSystem {
     # Start API server
     # Pass Python availability status to subprocess
     $pythonAvailable = if ($script:DoclingSystem.PythonAvailable) { '$true' } else { '$false' }
+    $modulePath = $script:DoclingSystem.ModulePath
     $apiScript = @"
 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$PSCommandPath' -Force
+Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-APIServer -Port $($script:DoclingSystem.APIPort)
 "@
@@ -34,7 +35,7 @@ Start-APIServer -Port $($script:DoclingSystem.APIPort)
     # Pass Python availability status to subprocess
     $procScript = @"
 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$PSCommandPath' -Force
+Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-DocumentProcessor
 "@

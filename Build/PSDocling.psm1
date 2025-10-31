@@ -5,6 +5,7 @@
 
 $script:DoclingSystem = @{
     Version          = "3.1.0"
+    ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = ".\ProcessedDocuments"
     APIPort          = 8080
@@ -1587,14 +1588,17 @@ function Add-QueueItem {
     param($Item)
 
     $queueFile = $script:DoclingSystem.QueueFile
-    $itemToAdd = $Item
+
+    # Capture variables for the closure (similar to Get-NextQueueItem pattern)
+    $localQueueFile = $queueFile
+    $localItem = $Item
 
     Use-FileMutex -Name "queue" -Script {
         # Read current queue
         $queue = @()
-        if (Test-Path $queueFile) {
+        if (Test-Path $localQueueFile) {
             try {
-                $content = Get-Content $queueFile -Raw
+                $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
                     $queue = @($content | ConvertFrom-Json)
                 }
@@ -1605,17 +1609,17 @@ function Add-QueueItem {
         }
 
         # Add new item
-        $newQueue = @($queue) + @($itemToAdd)
+        $newQueue = @($queue) + @($localItem)
 
         # Write back atomically
-        $tempFile = "$queueFile.tmp"
+        $tempFile = "$localQueueFile.tmp"
         if ($newQueue.Count -eq 1) {
             "[" + ($newQueue[0] | ConvertTo-Json -Depth 10 -Compress) + "]" | Set-Content $tempFile -Encoding UTF8
         }
         else {
             $newQueue | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
         }
-        Move-Item -Path $tempFile -Destination $queueFile -Force
+        Move-Item -Path $tempFile -Destination $localQueueFile -Force
     }.GetNewClosure()
 }
 
@@ -5277,9 +5281,10 @@ function Start-DoclingSystem {
     # Start API server
     # Pass Python availability status to subprocess
     $pythonAvailable = if ($script:DoclingSystem.PythonAvailable) { '$true' } else { '$false' }
+    $modulePath = $script:DoclingSystem.ModulePath
     $apiScript = @"
 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$PSCommandPath' -Force
+Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-APIServer -Port $($script:DoclingSystem.APIPort)
 "@
@@ -5293,7 +5298,7 @@ Start-APIServer -Port $($script:DoclingSystem.APIPort)
     # Pass Python availability status to subprocess
     $procScript = @"
 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$PSCommandPath' -Force
+Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-DocumentProcessor
 "@

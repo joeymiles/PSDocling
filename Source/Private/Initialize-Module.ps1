@@ -10,6 +10,7 @@
 
 $script:DoclingSystem = @{
     Version          = "3.1.0"
+    ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = ".\ProcessedDocuments"
     APIPort          = 8080

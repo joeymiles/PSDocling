@@ -11,14 +11,17 @@ function Add-QueueItem {
     param($Item)
 
     $queueFile = $script:DoclingSystem.QueueFile
-    $itemToAdd = $Item
+
+    # Capture variables for the closure (similar to Get-NextQueueItem pattern)
+    $localQueueFile = $queueFile
+    $localItem = $Item
 
     Use-FileMutex -Name "queue" -Script {
         # Read current queue
         $queue = @()
-        if (Test-Path $queueFile) {
+        if (Test-Path $localQueueFile) {
             try {
-                $content = Get-Content $queueFile -Raw
+                $content = Get-Content $localQueueFile -Raw
                 if ($content.Trim() -ne "[]") {
                     $queue = @($content | ConvertFrom-Json)
                 }
@@ -29,16 +32,16 @@ function Add-QueueItem {
         }
 
         # Add new item
-        $newQueue = @($queue) + @($itemToAdd)
+        $newQueue = @($queue) + @($localItem)
 
         # Write back atomically
-        $tempFile = "$queueFile.tmp"
+        $tempFile = "$localQueueFile.tmp"
         if ($newQueue.Count -eq 1) {
             "[" + ($newQueue[0] | ConvertTo-Json -Depth 10 -Compress) + "]" | Set-Content $tempFile -Encoding UTF8
         }
         else {
             $newQueue | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
         }
-        Move-Item -Path $tempFile -Destination $queueFile -Force
+        Move-Item -Path $tempFile -Destination $localQueueFile -Force
     }.GetNewClosure()
 }

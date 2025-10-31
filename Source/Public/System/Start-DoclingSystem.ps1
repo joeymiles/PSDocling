@@ -59,6 +59,16 @@ Start-DocumentProcessor
 
     Write-Host "System running! Frontend: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
 
+    # Store process IDs for reliable cleanup
+    $pidFile = Join-Path $env:TEMP "docling_pids.json"
+    $pids = @{
+        API       = $apiProcess.Id
+        Processor = $procProcess.Id
+        Web       = if ($webProcess) { $webProcess.Id } else { $null }
+        Timestamp = Get-Date
+    }
+    $pids | ConvertTo-Json | Set-Content $pidFile -Encoding UTF8
+
     return @{
         API       = $apiProcess
         Processor = $procProcess

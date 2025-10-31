@@ -5,21 +5,58 @@ function Write-Warn($msg)  { Write-Host $msg -ForegroundColor Yellow }
 Write-Info "Stopping Docling System processes..."
 
 # Stop PowerShell processes running Docling components
-$processes = Get-Process powershell -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -like "*docling*" -or
-    $_.CommandLine -like "*Start-APIServer*" -or
-    $_.CommandLine -like "*Start-DocumentProcessor*" -or
-    $_.CommandLine -like "*Start-WebServer*"
+# Use WMI to get CommandLine property (Get-Process doesn't have it in PS 5.1)
+$doclingProcesses = @()
+
+# Method 1: Check PIDs from stored file (most reliable)
+$pidFile = "$env:TEMP\docling_pids.json"
+if (Test-Path $pidFile) {
+    try {
+        $storedPids = Get-Content $pidFile | ConvertFrom-Json
+        foreach ($processId in @($storedPids.API, $storedPids.Processor, $storedPids.Web)) {
+            if ($processId) {
+                $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+                if ($proc) {
+                    $doclingProcesses += $proc
+                }
+            }
+        }
+        Write-Info "Found $($doclingProcesses.Count) processes from PID file"
+    } catch {
+        Write-Warn "Could not read PID file: $($_.Exception.Message)"
+    }
 }
 
-if ($processes) {
-    $processes | ForEach-Object {
+# Method 2: Use WMI to search by CommandLine (slower but finds orphaned processes)
+$wmiProcesses = Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+foreach ($wmiProc in $wmiProcesses) {
+    if ($wmiProc.CommandLine) {
+        $cmdLine = $wmiProc.CommandLine
+        if ($cmdLine -like "*docling_api.ps1*" -or
+            $cmdLine -like "*docling_processor.ps1*" -or
+            $cmdLine -like "*Start-WebServer.ps1*") {
+            $proc = Get-Process -Id $wmiProc.ProcessId -ErrorAction SilentlyContinue
+            if ($proc -and $proc -notin $doclingProcesses) {
+                $doclingProcesses += $proc
+            }
+        }
+    }
+}
+
+if ($doclingProcesses) {
+    Write-Info "Found $($doclingProcesses.Count) Docling processes to stop"
+    $doclingProcesses | ForEach-Object {
         try {
             Write-Info "Stopping process $($_.Id): $($_.ProcessName)"
             $_ | Stop-Process -Force
         } catch {
             Write-Warn "Could not stop process $($_.Id): $($_.Exception.Message)"
         }
+    }
+
+    # Remove PID file after stopping processes
+    if (Test-Path $pidFile) {
+        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Info "No Docling processes found running."

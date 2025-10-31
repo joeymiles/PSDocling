@@ -18,7 +18,7 @@ function New-FrontendFiles {
 
     # Pull version from module context if present, otherwise default
     $version = $script:DoclingSystem.Version
-    if (-not $version) { $version = "3.1.0" }
+    if (-not $version) { $version = "3.2.0" }
 
     # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
     $html = @"

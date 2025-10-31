@@ -25,7 +25,7 @@ if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) {
 }
 else {
     # Fallback for older PowerShell
-    $version = "3.1.0"
+    $version = "3.2.0"
 }
 Write-Host "Building version: $version"
 

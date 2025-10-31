@@ -1,10 +1,10 @@
 ﻿#Requires -Version 5.1
 # PSDocling Module - Built from source files
 # Docling Document Processing System
-# Version: 3.1.0
+# Version: 3.2.0
 
 $script:DoclingSystem = @{
-    Version          = "3.1.0"
+    Version          = "3.2.0"
     ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = ".\ProcessedDocuments"
@@ -1905,7 +1905,7 @@ function New-FrontendFiles {
 
     # Pull version from module context if present, otherwise default
     $version = $script:DoclingSystem.Version
-    if (-not $version) { $version = "3.1.0" }
+    if (-not $version) { $version = "3.2.0" }
 
     # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
     $html = @"
@@ -5659,5 +5659,5 @@ function Stop-DoclingSystem {
 
 Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Optimize-ChunksForRAG', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Add-QueueItemFolder', 'Get-NextQueueItem', 'Get-NextQueueItemFolder', 'Get-QueueItems', 'Get-QueueItemsFolder', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem', 'Stop-DoclingSystem')
 
-Write-Host 'PSDocling Module Loaded - Version 3.1.0' -ForegroundColor Cyan
+Write-Host 'PSDocling Module Loaded - Version 3.2.0' -ForegroundColor Cyan
 

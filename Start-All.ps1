@@ -1,6 +1,7 @@
 param(
   [switch]$GenerateFrontend,
   [switch]$OpenBrowser,
+  [switch]$UseWebView,
   [switch]$SkipPythonCheck,
   [switch]$EnsureUrlAcl,
   [switch]$ClearHistory,
@@ -78,15 +79,22 @@ try {
   }
 
   Write-Info "Starting services..."
-  if ($OpenBrowser) {
-    Start-DoclingSystem -OpenBrowser | Out-Null
-  } else {
-    Start-DoclingSystem | Out-Null
-  }
+  $startParams = @{}
+  if ($OpenBrowser) { $startParams['OpenBrowser'] = $true }
+  if ($UseWebView) { $startParams['UseWebView'] = $true }
+
+  Start-DoclingSystem @startParams | Out-Null
 
   Write-Ok "Backend API:   http://localhost:$ApiPort"
   Write-Ok "Frontend UI:   http://localhost:$WebPort"
-  Write-Info "Tip: Use -OpenBrowser to open the UI automatically."
+
+  if ($UseWebView) {
+    Write-Info "PyWebView window launched"
+  } elseif ($OpenBrowser) {
+    Write-Info "Browser opened"
+  } else {
+    Write-Info "Tip: Use -OpenBrowser to open in browser, or -UseWebView for native window"
+  }
 
 } finally {
   Pop-Location

@@ -31,7 +31,7 @@ function Stop-DoclingSystem {
     if (Test-Path $pidFile) {
         try {
             $storedPids = Get-Content $pidFile | ConvertFrom-Json
-            foreach ($processId in @($storedPids.API, $storedPids.Processor, $storedPids.Web)) {
+            foreach ($processId in @($storedPids.API, $storedPids.Processor, $storedPids.Web, $storedPids.PyWebView)) {
                 if ($processId) {
                     $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
                     if ($proc) {
@@ -46,13 +46,14 @@ function Stop-DoclingSystem {
     }
 
     # Method 2: Use WMI to search by CommandLine (slower but finds orphaned processes)
-    $wmiProcesses = Get-WmiObject Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+    $wmiProcesses = Get-WmiObject Win32_Process -Filter "Name='powershell.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue
     foreach ($wmiProc in $wmiProcesses) {
         if ($wmiProc.CommandLine) {
             $cmdLine = $wmiProc.CommandLine
             if ($cmdLine -like "*docling_api.ps1*" -or
                 $cmdLine -like "*docling_processor.ps1*" -or
-                $cmdLine -like "*Start-WebServer.ps1*") {
+                $cmdLine -like "*Start-WebServer.ps1*" -or
+                $cmdLine -like "*Launch-PyWebView.py*") {
                 $proc = Get-Process -Id $wmiProc.ProcessId -ErrorAction SilentlyContinue
                 if ($proc -and $proc -notin $doclingProcesses) {
                     $doclingProcesses += $proc

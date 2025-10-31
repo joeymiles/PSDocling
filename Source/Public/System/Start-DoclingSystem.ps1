@@ -10,7 +10,8 @@
 function Start-DoclingSystem {
     [CmdletBinding()]
     param(
-        [switch]$OpenBrowser
+        [switch]$OpenBrowser,
+        [switch]$UseWebView
     )
 
     Write-Host "Starting Docling System..." -ForegroundColor Cyan
@@ -51,7 +52,33 @@ Start-DocumentProcessor
         $webProcess = Start-Process powershell -ArgumentList "-File", $webPath, "-Port", $script:DoclingSystem.WebPort -PassThru -WindowStyle Hidden
         Write-Host "Web server started on port $($script:DoclingSystem.WebPort)" -ForegroundColor Green
 
-        if ($OpenBrowser) {
+        if ($UseWebView) {
+            Start-Sleep 2
+            # Try multiple locations for the PyWebView script
+            $pyWebViewScript = $null
+            $searchPaths = @(
+                ".\Launch-PyWebView.py",                          # Current directory
+                (Join-Path $PSScriptRoot "..\..\..\Launch-PyWebView.py"),  # From Build folder
+                (Join-Path (Split-Path $PSScriptRoot -Parent) "..\..\..\Launch-PyWebView.py")  # From nested source
+            )
+
+            foreach ($path in $searchPaths) {
+                $resolvedPath = Resolve-Path $path -ErrorAction SilentlyContinue
+                if ($resolvedPath -and (Test-Path $resolvedPath)) {
+                    $pyWebViewScript = $resolvedPath.Path
+                    break
+                }
+            }
+
+            if ($pyWebViewScript) {
+                $pyProcess = Start-Process python -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru
+                Write-Host "PyWebView window launched" -ForegroundColor Green
+            } else {
+                Write-Warning "PyWebView script not found. Install pywebview with: pip install pywebview requests"
+                Write-Host "Falling back to browser mode" -ForegroundColor Yellow
+                Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
+            }
+        } elseif ($OpenBrowser) {
             Start-Sleep 2
             Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
         }
@@ -65,6 +92,7 @@ Start-DocumentProcessor
         API       = $apiProcess.Id
         Processor = $procProcess.Id
         Web       = if ($webProcess) { $webProcess.Id } else { $null }
+        PyWebView = if ($pyProcess) { $pyProcess.Id } else { $null }
         Timestamp = Get-Date
     }
     $pids | ConvertTo-Json | Set-Content $pidFile -Encoding UTF8
@@ -73,5 +101,6 @@ Start-DocumentProcessor
         API       = $apiProcess
         Processor = $procProcess
         Web       = $webProcess
+        PyWebView = if ($pyProcess) { $pyProcess } else { $null }
     }
 }

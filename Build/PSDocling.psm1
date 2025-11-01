@@ -5544,7 +5544,7 @@ Start-DocumentProcessor
             }
 
             if ($pyWebViewScript) {
-                $pyProcess = Start-Process python -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru
+                $pyProcess = Start-Process python -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru -WindowStyle Hidden
                 Write-Host "PyWebView window launched" -ForegroundColor Green
             } else {
                 Write-Warning "PyWebView script not found. Install pywebview with: pip install pywebview requests"

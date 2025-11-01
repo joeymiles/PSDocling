@@ -29,9 +29,13 @@ def check_backend_ready(url, max_attempts=30, delay=1):
 
 class DownloadAPI:
     """API class to expose download functionality to JavaScript"""
-    def __init__(self, api_url, window):
+    def __init__(self, api_url):
         self.api_url = api_url
-        self.window = window
+        self._window = None  # Private reference to avoid serialization
+
+    def set_window(self, window):
+        """Set window reference after creation to avoid circular dependency"""
+        self._window = window
 
     def download_file(self, doc_id, filename):
         """Download a file from the API with native save dialog"""
@@ -48,7 +52,7 @@ class DownloadAPI:
 
                 # Show native save file dialog
                 file_types = ('Zip Files (*.zip)', 'All files (*.*)')
-                save_path = self.window.create_file_dialog(
+                save_path = self._window.create_file_dialog(
                     webview.SAVE_DIALOG,
                     directory=str(Path.home() / "Downloads"),
                     save_filename=suggested_name,
@@ -101,6 +105,9 @@ def main():
     # Create and configure the webview window
     print(f"Launching PSDocling interface at {web_url}")
 
+    # Create API instance
+    api = DownloadAPI(api_url)
+
     # Window configuration with file download support
     window = webview.create_window(
         title='PSDocling - Document Processor',
@@ -110,12 +117,12 @@ def main():
         resizable=True,
         fullscreen=False,
         min_size=(800, 600),
-        background_color='#0f1115'
+        background_color='#0f1115',
+        js_api=api
     )
 
-    # Create API instance and pass window reference for file dialogs
-    download_api = DownloadAPI(api_url, window)
-    window.expose(download_api)
+    # Set window reference after window is created (avoids circular reference)
+    api.set_window(window)
 
     # Configure download handler
     def on_download(download_path):

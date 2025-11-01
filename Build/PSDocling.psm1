@@ -5550,14 +5550,16 @@ Start-DocumentProcessor
                 Write-Warning "PyWebView script not found. Install pywebview with: pip install pywebview requests"
                 Write-Host "Falling back to browser mode" -ForegroundColor Yellow
                 Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
+                Write-Host "Frontend opened in browser: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
             }
         } elseif ($OpenBrowser) {
             Start-Sleep 2
             Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
+            Write-Host "Frontend opened in browser: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
         }
     }
 
-    Write-Host "System running! Frontend: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
+    Write-Host "System running!" -ForegroundColor Green
 
     # Store process IDs for reliable cleanup
     $pidFile = Join-Path $env:TEMP "docling_pids.json"

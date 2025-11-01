@@ -85,15 +85,15 @@ try {
 
   Start-DoclingSystem @startParams | Out-Null
 
-  Write-Ok "Backend API:   http://localhost:$ApiPort"
-  Write-Ok "Frontend UI:   http://localhost:$WebPort"
+  Write-Ok "Backend API running on http://localhost:$ApiPort"
 
   if ($UseWebView) {
-    Write-Info "PyWebView window launched"
+    Write-Info "Native window launched with PyWebView"
   } elseif ($OpenBrowser) {
-    Write-Info "Browser opened"
+    Write-Info "Browser opened at http://localhost:$WebPort"
   } else {
     Write-Info "Tip: Use -OpenBrowser to open in browser, or -UseWebView for native window"
+    Write-Info "     Frontend available at: http://localhost:$WebPort"
   }
 
 } finally {

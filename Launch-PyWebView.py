@@ -29,25 +29,41 @@ def check_backend_ready(url, max_attempts=30, delay=1):
 
 class DownloadAPI:
     """API class to expose download functionality to JavaScript"""
-    def __init__(self, api_url):
+    def __init__(self, api_url, window):
         self.api_url = api_url
+        self.window = window
 
-    def download_file(self, url, filename):
-        """Download a file from the API"""
+    def download_file(self, doc_id, filename):
+        """Download a file from the API with native save dialog"""
         try:
-            print(f"Downloading: {url}")
-            response = requests.get(url, timeout=60)
-            if response.status_code == 200:
-                # Get Downloads folder
-                downloads_path = Path.home() / "Downloads"
-                downloads_path.mkdir(exist_ok=True)
+            print(f"Downloading document: {doc_id}")
+            # Construct the API URL
+            download_url = f"{self.api_url}/api/download/{doc_id}"
 
-                # Save file
-                file_path = downloads_path / filename
-                with open(file_path, 'wb') as f:
-                    f.write(response.content)
-                print(f"Downloaded to: {file_path}")
-                return str(file_path)
+            # Fetch the file
+            response = requests.get(download_url, timeout=60)
+            if response.status_code == 200:
+                # Suggest filename with .zip extension if not present
+                suggested_name = filename if filename.endswith('.zip') else f"{filename}.zip"
+
+                # Show native save file dialog
+                file_types = ('Zip Files (*.zip)', 'All files (*.*)')
+                save_path = self.window.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    directory=str(Path.home() / "Downloads"),
+                    save_filename=suggested_name,
+                    file_types=file_types
+                )
+
+                if save_path:
+                    # User selected a location, save the file
+                    with open(save_path, 'wb') as f:
+                        f.write(response.content)
+                    print(f"Downloaded to: {save_path}")
+                    return str(save_path)
+                else:
+                    print("Download cancelled by user")
+                    return None
             else:
                 print(f"Download failed with status: {response.status_code}")
                 return None
@@ -85,12 +101,6 @@ def main():
     # Create and configure the webview window
     print(f"Launching PSDocling interface at {web_url}")
 
-    # Create API instance
-    download_api = DownloadAPI(api_url)
-
-    # Set default download directory to user's Downloads folder
-    downloads_dir = str(Path.home() / "Downloads")
-
     # Window configuration with file download support
     window = webview.create_window(
         title='PSDocling - Document Processor',
@@ -100,9 +110,12 @@ def main():
         resizable=True,
         fullscreen=False,
         min_size=(800, 600),
-        background_color='#0f1115',
-        js_api=download_api
+        background_color='#0f1115'
     )
+
+    # Create API instance and pass window reference for file dialogs
+    download_api = DownloadAPI(api_url, window)
+    window.expose(download_api)
 
     # Configure download handler
     def on_download(download_path):

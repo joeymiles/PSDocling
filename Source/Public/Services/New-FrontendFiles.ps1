@@ -1346,6 +1346,19 @@ function New-FrontendFiles {
 
     async function downloadDocument(docId) {
         try {
+            // Check if running in PyWebView with native download support
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.download_file) {
+                // Use PyWebView native file save dialog
+                const result = await window.pywebview.api.download_file(docId, docId + '.zip');
+                if (result) {
+                    console.log('File saved to:', result);
+                } else {
+                    console.log('Download cancelled by user');
+                }
+                return;
+            }
+
+            // Fallback to blob download for web browser
             const response = await fetch(API + '/api/download/' + docId);
             if (!response.ok) { throw new Error('Download failed'); }
             const blob = await response.blob();
@@ -1384,15 +1397,30 @@ function New-FrontendFiles {
 
     async function downloadAllFilesForDocument(docId, originalFileName) {
         try {
+            // Use original filename without extension, add .zip
+            const baseFileName = originalFileName.replace(/\.[^/.]+$/, '');
+            const filename = baseFileName + '.zip';
+
+            // Check if running in PyWebView with native download support
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.download_file) {
+                // Use PyWebView native file save dialog
+                const result = await window.pywebview.api.download_file(docId, filename);
+                if (result) {
+                    console.log('File saved to:', result);
+                } else {
+                    console.log('Download cancelled by user');
+                }
+                return;
+            }
+
+            // Fallback to blob download for web browser
             const response = await fetch(API + '/api/download/' + docId);
             if (!response.ok) { throw new Error('Download failed'); }
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            // Use original filename without extension, add .zip
-            const baseFileName = originalFileName.replace(/\.[^/.]+$/, '');
-            a.download = baseFileName + '.zip';
+            a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);

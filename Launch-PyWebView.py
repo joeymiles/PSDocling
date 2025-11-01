@@ -40,18 +40,24 @@ class DownloadAPI:
     def download_file(self, doc_id, filename):
         """Download a file from the API with native save dialog"""
         try:
-            print(f"Downloading document: {doc_id}")
+            print(f"[PyWebView Download] Starting download for document: {doc_id}, filename: {filename}")
+
             # Construct the API URL
             download_url = f"{self.api_url}/api/download/{doc_id}"
+            print(f"[PyWebView Download] Fetching from URL: {download_url}")
 
             # Fetch the file
             response = requests.get(download_url, timeout=60)
+            print(f"[PyWebView Download] Response status: {response.status_code}, size: {len(response.content)} bytes")
+
             if response.status_code == 200:
                 # Suggest filename with .zip extension if not present
-                suggested_name = filename if filename.endswith('.zip') else f"{filename}.zip"
+                suggested_name = filename if filename.endswith('.zip') else f"{doc_id}.zip"
+                print(f"[PyWebView Download] Suggested filename: {suggested_name}")
 
                 # Show native save file dialog
                 file_types = ('Zip Files (*.zip)', 'All files (*.*)')
+                print(f"[PyWebView Download] Opening save dialog...")
                 save_path = self._window.create_file_dialog(
                     webview.SAVE_DIALOG,
                     directory=str(Path.home() / "Downloads"),
@@ -59,20 +65,32 @@ class DownloadAPI:
                     file_types=file_types
                 )
 
+                print(f"[PyWebView Download] Dialog result: {save_path}, type: {type(save_path)}")
+
+                # Handle both single file (string) and potential tuple/list returns
                 if save_path:
-                    # User selected a location, save the file
-                    with open(save_path, 'wb') as f:
-                        f.write(response.content)
-                    print(f"Downloaded to: {save_path}")
-                    return str(save_path)
-                else:
-                    print("Download cancelled by user")
-                    return None
+                    # If it's a tuple or list, get the first element
+                    if isinstance(save_path, (tuple, list)):
+                        save_path = save_path[0] if save_path else None
+
+                    if save_path:
+                        # User selected a location, save the file
+                        print(f"[PyWebView Download] Saving to: {save_path}")
+                        with open(save_path, 'wb') as f:
+                            f.write(response.content)
+                        print(f"[PyWebView Download] ✓ Successfully saved to: {save_path}")
+                        return str(save_path)
+
+                print("[PyWebView Download] Download cancelled by user or no path selected")
+                return None
             else:
-                print(f"Download failed with status: {response.status_code}")
+                error_msg = f"Download failed with status: {response.status_code}"
+                print(f"[PyWebView Download] ERROR: {error_msg}")
                 return None
         except Exception as e:
-            print(f"Download error: {e}")
+            import traceback
+            print(f"[PyWebView Download] EXCEPTION: {e}")
+            print(f"[PyWebView Download] Traceback: {traceback.format_exc()}")
             return None
 
 def main():

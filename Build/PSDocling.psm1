@@ -5572,7 +5572,13 @@ Start-DocumentProcessor
             }
 
             if ($pyWebViewScript) {
-                $pyProcess = Start-Process python -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru -WindowStyle Hidden
+                # Use pythonw.exe to launch without console window (GUI only)
+                $pythonw = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
+                if (-not $pythonw) {
+                    # Fallback to python.exe if pythonw not found
+                    $pythonw = 'python'
+                }
+                $pyProcess = Start-Process $pythonw -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru
                 Write-Host "PyWebView window launched" -ForegroundColor Green
             } else {
                 Write-Warning "PyWebView script not found. Install pywebview with: pip install pywebview requests"

@@ -1,225 +1,119 @@
-# 📄 PowerShell-wrapped Python Docling Document Processing System. 
- 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
-[![Docling](https://img.shields.io/badge/Docling%2B-red.svg)](https://docling-project.github.io/docling/)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.2.0-brightgreen.svg)](https://github.com/joeymiles/PSDocling)
+# PSDocling
 
-Say hello to the powerful PowerShell module that provides enterprise-grade document conversion capabilities using Python's Docling library. Convert PDFs, Office documents, HTML, Markdown, and images to various formats with advanced processing options.
+PowerShell module that wraps Python [Docling](https://docling-project.github.io/docling/) for document conversion. Convert PDFs, Office files, HTML, Markdown, CSV, and images to Markdown, HTML, JSON, plain text, or DocTags, with an optional REST API and web UI.
 
-## ✨ Features
+**Version:** 3.2.0 · **License:** MIT
 
-- 📁 **Multi-Format Support**: PDF, DOCX, XLSX, PPTX, MD, HTML, XHTML, CSV, and images (PNG, JPEG, TIFF, BMP, WEBP)
-- 🎯 **Multiple Output Formats**: Markdown, JSON, HTML, DocTags (with proper XML structure)
-- 🔄 **Queue-Based Processing**: Reliable document processing with status tracking
-- 🔌 **REST API**: HTTP endpoints for programmatic access
-- 🌐 **Web Frontend**: Drag-drop file upload interface with real-time status updates
-- 📥 **Smart File Management**: Processed Files section shows only generated files with re-process functionality
-- ⚡ **Immediate Updates**: Instant page refresh after document processing completion
-- 🧩 **Advanced Chunking**: Hybrid chunking with semantic and structure-aware document splitting
-- 🔬 **Enrichment Options**: Code understanding, formula detection, picture classification and description
-- 💻 **Cross-Platform**: Works on Windows PowerShell and PowerShell Core (Linux/macOS)
-- 🔧 **Python Integration**: Leverages the powerful Docling library for document conversion
+## Requirements
 
-## 🏗️ Architecture
+- PowerShell 5.1+ or PowerShell Core 6+
+- Python 3.8+ with the `docling` package (optional; simulation mode available without Python)
+- .NET Framework 4.7.2+ when using Windows PowerShell
+- Optional native window: `pip install -r requirements-webview.txt` (PyWebView)
 
-The system uses a multi-process architecture:
-
-- **API Server**: REST endpoints for document submission and status queries
-- **Document Processor**: Background service that converts queued documents
-- **Web Frontend**: Single-page application for file upload and management
-- **Queue Management**: Folder-based queue system for reliable cross-process communication
-
-## 📋 Requirements
-
-- **PowerShell**: 5.1+ or PowerShell Core 6+
-- **Python**: 3.8+ (optional for simulation mode)
-- **Docling**: `pip install docling` (auto-installed if missing)
-- **.NET**: 4.7.2+ (Windows PowerShell)
-
-## 🚀 Installation
-
-### Quick Install
+## Install
 
 ```powershell
-# Clone the repository
 git clone https://github.com/joeymiles/PSDocling.git
 cd PSDocling
 
-# Install as PowerShell module
+# Build module from Source/
+.\Build-PSDoclingModule.ps1
+
+# Install for current user (or -Scope AllUsers)
 .\Install-DoclingModule.ps1
-
-# Or install for all users (requires admin)
-.\Install-DoclingModule.ps1 -Scope AllUsers
 ```
 
-### Manual Installation
-
-1. **Prerequisites**: Python 3.8+ with `docling` package
-2. **Clone**: `git clone https://github.com/joeymiles/PSDocling.git`
-3. **Import**: `Import-Module .\PSDocling.psm1`
-
-## 💻 Usage
-
-### Quick Start
+To work from the repo without installing:
 
 ```powershell
-# Start all services with web interface
+Import-Module .\Build\PSDocling.psm1 -Force
+```
+
+## Quick start
+
+```powershell
+# Start API + processor + web UI
 .\Start-All.ps1 -GenerateFrontend -OpenBrowser
 
-# Stop all services
+# Stop services
 .\Stop-All.ps1
 ```
 
-The web interface will open automatically at `http://localhost:8081`
-
-### Programmatic Control
+Or via module commands:
 
 ```powershell
-# Import the module
 Import-Module PSDocling
-
-# Start the system
 Start-DoclingSystem -GenerateFrontend -OpenBrowser
-
-# Stop the system (processes only)
 Stop-DoclingSystem
-
-# Stop and clear queue
-Stop-DoclingSystem -ClearQueue
 ```
 
-### 🌐 Web Interface
+## Ports and paths
 
-#### Main Dashboard
-![Frontend](FrontEnd.JPG)
-*Clean, intuitive interface for document processing with drag-drop support*
+| Component | Default |
+|-----------|---------|
+| API server | `http://localhost:8080` |
+| Web frontend | `http://localhost:8081` |
+| Queue folder | `$env:TEMP\DoclingQueue` |
+| Status file | `$env:TEMP\docling_status.json` |
+| Working temp | `$env:TEMP\DoclingProcessor` |
+| Output | `.\ProcessedDocuments` |
 
-#### File Upload & Processing
-![Uploaded File](UploadedFile.JPG)
-*Real-time processing status with progress tracking*
-
-**Features:**
-- 📁 Drag-drop file upload
-- 📊 Real-time processing status
-- 🔄 Re-process to different formats
-- 📥 Direct download of converted files
-- 🎯 Format-specific enrichment options
-
-### 🔌 REST API
-
-For programmatic access, see the [Backend Services Guide](Help_files/01_Backend_Services.md).
-
-## ⚙️ Configuration
-
-### Default Ports
-- **API Server**: 8080
-- **Web Frontend**: 8081
-
-### Custom Configuration
+Custom ports:
 
 ```powershell
-# Custom ports
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081
-
-# Skip Python check (simulation mode)
-.\Start-All.ps1 -SkipPythonCheck
-
-# Generate frontend and open browser
-.\Start-All.ps1 -GenerateFrontend -OpenBrowser
+.\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
 ```
 
-### File Locations
-- **Queue Folder**: `$env:TEMP\DoclingQueue` (folder-based queue system)
-- **Status**: `$env:TEMP\docling_status.json`
-- **Temp Directory**: `$env:TEMP\DoclingProcessor`
-- **Output Directory**: `.\ProcessedDocuments`
-
-## 📚 Documentation
-
-### Getting Started
-- 📖 [Overview & Quick Start](Help_files/00_Overview.md)
-- 🖥️ [Frontend Services Guide](Help_files/02_Frontend_Services.md)
-- 🔧 [Backend Services Guide](Help_files/01_Backend_Services.md)
-- 📄 [File Processing Guide](Help_files/03_File_Processing.md)
-
-### Key Functions
-For detailed function documentation and examples, see the guides above or use:
-```powershell
-Get-Help Add-DocumentToQueue -Full
-Get-Help Start-DoclingSystem -Examples
-```
-
-## 🎯 Advanced Features
-
-### Document Chunking
-Advanced semantic chunking for large documents with structure preservation.
-See the [File Processing Guide](Help_files/03_File_Processing.md#advanced-processing) for details.
-
-### Enrichment Options
-- 💻 **Code Understanding** - Analyze and understand code blocks
-- 🔬 **Formula Detection** - Extract mathematical formulas
-- 🖼️ **Picture Analysis** - Classify and describe images
-- 📊 **Table Preservation** - Maintain table structures
-
-For configuration details, see [Processing Options](Help_files/03_File_Processing.md#processing-options).
-
-## 🛠️ Development
-
-### Testing Without Python
+Simulation mode (no Python/Docling):
 
 ```powershell
-# Simulation mode for UI testing
-.\Start-All.ps1 -SkipPythonCheck
+.\Start-All.ps1 -SkipPythonCheck -GenerateFrontend -OpenBrowser
 ```
 
-### Module Development
+## Architecture
+
+Three cooperating processes: an HTTP API server, a background document processor that runs Docling, and a static web frontend. Work items move through a folder-based queue with shared status files under `$env:TEMP`.
+
+## Features
+
+- Input: PDF, DOCX, XLSX, PPTX, MD, HTML/XHTML, CSV, PNG/JPEG/TIFF/BMP/WEBP
+- Output: Markdown, HTML, JSON, plain text, DocTags (XML)
+- Queue-based processing with status tracking
+- REST API for programmatic upload/status/download
+- Web UI with drag-and-drop upload
+- Optional enrichments (code, formulas, picture classification/description)
+- Optional hybrid chunking for RAG workflows
+
+## Documentation
+
+Install and usage guides:
+
+- [Overview](Help_files/00_Overview.md)
+- [Backend services](Help_files/01_Backend_Services.md)
+- [Frontend services](Help_files/02_Frontend_Services.md)
+- [File processing](Help_files/03_File_Processing.md)
 
 ```powershell
-# Import for interactive testing
-Import-Module .\PSDocling.psm1 -Force
-
-# Test specific functions
-Initialize-DoclingSystem -GenerateFrontend
-$status = Get-DoclingSystemStatus
+Get-Help Start-DoclingSystem -Full
+Get-Help Add-DocumentToQueue -Examples
 ```
 
-## 🔍 Troubleshooting
+## Development
 
-### Common Issues & Solutions
-
-For detailed troubleshooting, see the [File Processing Guide](Help_files/03_File_Processing.md#troubleshooting).
-
-**Quick Fixes:**
 ```powershell
-# Python not found
-python -m pip install docling
-
-# Port conflicts
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081
-
-# Permission issues (run as admin)
-.\Start-All.ps1 -EnsureUrlAcl
-
-# Reset stuck processing
-.\Stop-All.ps1
-.\Start-All.ps1
+.\Build-PSDoclingModule.ps1
+.\Tests\Test-AuditFixes.ps1
 ```
 
-## 🤝 Contributing
+Source lives under `Source/`; the build concatenates it into `Build/PSDocling.psm1` and copies `PSDocling.psd1`.
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+## Uninstall
 
-## 📝 License
+```powershell
+.\Uninstall-DoclingModule.ps1
+```
 
-MIT
+## License
 
-## 💬 Support
-
-- **Issues**: [GitHub Issues](https://github.com/joeymiles/PSDocling/issues)
-- **Examples**: Check `HowTo.ps1` for usage examples
+MIT — see [LICENSE](LICENSE).

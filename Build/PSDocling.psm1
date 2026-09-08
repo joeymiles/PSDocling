@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # PSDocling Module - Built from source files
 # Docling Document Processing System
 # Version: 3.2.0
@@ -840,7 +840,7 @@ def is_near_duplicate(text1, text2, threshold=0.90):
     return similarity >= threshold
 
 def estimate_tokens(text):
-    """Estimate token count (4 chars â‰ˆ 1 token)"""
+    """Estimate token count (4 chars ≈ 1 token)"""
     return len(text) // 4 if text else 0
 
 def detect_chunk_type(text):

@@ -8,7 +8,7 @@
 
     # Author and company information
     Author = 'Joey A Miles'
-    CompanyName = 'Just A Guy Doing Cool Stuff'
+    CompanyName = 'Unknown'
     Copyright = '(c) 2025. All rights reserved.'
 
     # Description of the functionality provided by this module
@@ -67,9 +67,6 @@
 
             # A URL to the main website for this project
             ProjectUri = 'https://github.com/joeymiles/PSDocling'
-
-            # A URL to an icon representing this module
-            IconUri = 'https://raw.githubusercontent.com/joeymiles/PSDocling/main/icon.png'
 
             # Release notes for this version
             ReleaseNotes = @"

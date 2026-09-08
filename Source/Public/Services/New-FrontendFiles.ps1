@@ -1,9 +1,8 @@
-﻿<#
+<#
 .SYNOPSIS
     New-FrontendFiles function from PSDocling module
 .DESCRIPTION
     Writes a redesigned index.html for PSDocling and a small static dev server.
-    Original module by: Jaga
 .NOTES
     Part of PSDocling Document Processing System
 #>

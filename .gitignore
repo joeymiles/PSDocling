@@ -78,11 +78,6 @@ settings.local.*
 *.webp
 Capture.*
 Screenshot.*
-# But allow specific documentation screenshots
-!FrontEnd.JPG
-!UploadedFile.JPG
-!Reprocess.JPG
-!ProcessingOptions.JPG
 
 # Documentation build artifacts
 docs/_build/

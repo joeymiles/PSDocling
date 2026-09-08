@@ -719,7 +719,7 @@ function New-FrontendFiles {
                 '</div>' +
                 '<div style="display: flex; justify-content: space-between; align-items: center;">' +
                     '<div id="download-buttons-' + id + '" style="display:none;">' +
-                        '<button class="download-btn" onclick="downloadDocument(\'" + id + "\')" style="margin-right: 10px;">Download</button>' +
+                        '<button class="download-btn" onclick="downloadDocument(\'' + id + '\')" style="margin-right: 10px;">Download</button>' +
                     '</div>' +
                     '<div style="display: flex; gap: 8px;">' +
                         '<button class="start-btn" onclick="startConversion(\'' + id + '\')" id="start-' + id + '" disabled>Start Conversion</button>' +

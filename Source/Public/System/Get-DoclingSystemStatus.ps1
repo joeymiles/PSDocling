@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Get-DoclingSystemStatus function from PSDocling module
 .DESCRIPTION
@@ -8,7 +8,7 @@
     Part of PSDocling Document Processing System
 #>
 function Get-DoclingSystemStatus {
-    $queue = Get-QueueItems
+    $queue = Get-QueueItemsFolder
     $allStatus = Get-ProcessingStatus
     $processing = $allStatus.Values | Where-Object { $_.Status -eq 'Processing' }
     $allCompleted = $allStatus.Values | Where-Object { $_.Status -eq 'Completed' }

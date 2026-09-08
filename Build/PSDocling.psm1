@@ -1608,23 +1608,27 @@ function Add-QueueItemFolder {
         [string]$DocumentId
     )
 
-    # Ensure queue folder exists
     $queueFolder = "$env:TEMP\DoclingQueue"
-    if (-not (Test-Path $queueFolder)) {
-        New-Item -Path $queueFolder -ItemType Directory -Force | Out-Null
-    }
+    $localQueueFolder = $queueFolder
+    $localDocumentId = $DocumentId
 
-    # Create a queue file for this document
-    # File name format: timestamp_documentId.queue
-    $timestamp = [DateTime]::Now.ToString("yyyyMMddHHmmssffff")
-    $queueFile = Join-Path $queueFolder "${timestamp}_${DocumentId}.queue"
+    $result = Use-FileMutex -Name "queuefolder" -Script {
+        if (-not (Test-Path $localQueueFolder)) {
+            New-Item -Path $localQueueFolder -ItemType Directory -Force | Out-Null
+        }
 
-    # Write the document ID to the file (simple content)
-    $DocumentId | Set-Content -Path $queueFile -Encoding UTF8
+        # File name format: timestamp_documentId.queue
+        $timestamp = [DateTime]::Now.ToString("yyyyMMddHHmmssffff")
+        $queueFile = Join-Path $localQueueFolder "${timestamp}_${localDocumentId}.queue"
 
-    Write-Verbose "Added to queue: $DocumentId (File: $queueFile)"
-    return $queueFile
+        $localDocumentId | Set-Content -Path $queueFile -Encoding UTF8
+        Write-Verbose "Added to queue: $localDocumentId (File: $queueFile)"
+        return $queueFile
+    }.GetNewClosure()
+
+    return $result
 }
+
 
 # Public: Get-NextQueueItem
 function Get-NextQueueItem {
@@ -1688,35 +1692,41 @@ function Get-NextQueueItem {
 # Public: Get-NextQueueItemFolder
 function Get-NextQueueItemFolder {
     $queueFolder = "$env:TEMP\DoclingQueue"
+    $localQueueFolder = $queueFolder
 
-    # Ensure queue folder exists
-    if (-not (Test-Path $queueFolder)) {
-        New-Item -Path $queueFolder -ItemType Directory -Force | Out-Null
-        return $null
-    }
+    $result = Use-FileMutex -Name "queuefolder" -Script {
+        # Ensure queue folder exists
+        if (-not (Test-Path $localQueueFolder)) {
+            New-Item -Path $localQueueFolder -ItemType Directory -Force | Out-Null
+            return $null
+        }
 
-    # Get all queue files, sorted by creation time (oldest first)
-    $queueFiles = Get-ChildItem -Path $queueFolder -Filter "*.queue" |
-                  Sort-Object CreationTime |
-                  Select-Object -First 1
+        # Get oldest queue file (FIFO by CreationTime)
+        $queueFile = Get-ChildItem -Path $localQueueFolder -Filter "*.queue" -ErrorAction SilentlyContinue |
+                     Sort-Object CreationTime |
+                     Select-Object -First 1
 
-    if (-not $queueFiles) {
-        Write-Verbose "No items in queue folder"
-        return $null
-    }
+        if (-not $queueFile) {
+            Write-Verbose "No items in queue folder"
+            return $null
+        }
 
-    $queueFile = $queueFiles[0]
+        try {
+            $documentId = (Get-Content -Path $queueFile.FullName -Raw -Encoding UTF8).Trim()
+            # Claim by deleting under mutex; if delete fails, another claim won
+            Remove-Item -Path $queueFile.FullName -Force -ErrorAction Stop
+            Write-Verbose "Retrieved from queue: $documentId (File: $($queueFile.Name))"
+            return $documentId
+        }
+        catch {
+            Write-Verbose "Failed to claim queue file $($queueFile.FullName): $($_.Exception.Message)"
+            return $null
+        }
+    }.GetNewClosure()
 
-    # Read the document ID from the file
-    $documentId = Get-Content -Path $queueFile.FullName -Raw -Encoding UTF8
-    $documentId = $documentId.Trim()
-
-    # Delete the queue file (item is now being processed)
-    Remove-Item -Path $queueFile.FullName -Force
-
-    Write-Verbose "Retrieved from queue: $documentId (File: $($queueFile.Name))"
-    return $documentId
+    return $result
 }
+
 
 # Public: Get-QueueItems
 function Get-QueueItems {
@@ -2606,7 +2616,7 @@ function New-FrontendFiles {
                 '</div>' +
                 '<div style="display: flex; justify-content: space-between; align-items: center;">' +
                     '<div id="download-buttons-' + id + '" style="display:none;">' +
-                        '<button class="download-btn" onclick="downloadDocument(\'" + id + "\')" style="margin-right: 10px;">Download</button>' +
+                        '<button class="download-btn" onclick="downloadDocument(\'' + id + '\')" style="margin-right: 10px;">Download</button>' +
                     '</div>' +
                     '<div style="display: flex; gap: 8px;">' +
                         '<button class="start-btn" onclick="startConversion(\'' + id + '\')" id="start-' + id + '" disabled>Start Conversion</button>' +
@@ -3956,41 +3966,10 @@ function Start-APIServer {
                                     } | ConvertTo-Json
                                 }
                                 else {
-                                    # Create new queue item for reprocessing
-                                    $reprocessItem = @{
-                                        Id                       = $documentId  # Keep same ID to update existing entry
-                                        FilePath                 = $currentStatus.FilePath
-                                        FileName                 = $currentStatus.FileName
-                                        ExportFormat             = $newFormat
-                                        EmbedImages              = $embedImages
-                                        EnrichCode               = $enrichCode
-                                        EnrichFormula            = $enrichFormula
-                                        EnrichPictureClasses     = $enrichPictureClasses
-                                        EnrichPictureDescription = $enrichPictureDescription
-
-                                        # Chunking Options
-                                        EnableChunking           = $enableChunking
-                                        ChunkTokenizerBackend    = $chunkTokenizerBackend
-                                        ChunkTokenizerModel      = $chunkTokenizerModel
-                                        ChunkOpenAIModel         = $chunkOpenAIModel
-                                        ChunkMaxTokens           = $chunkMaxTokens
-                                        ChunkMergePeers          = $chunkMergePeers
-                                        ChunkIncludeContext      = $chunkIncludeContext
-                                        ChunkTableSerialization  = $chunkTableSerialization
-                                        ChunkPictureStrategy     = $chunkPictureStrategy
-                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
-                                        ChunkOverlapTokens       = $chunkOverlapTokens
-                                        ChunkPreserveSentences   = $chunkPreserveSentences
-                                        ChunkPreserveCode        = $chunkPreserveCode
-                                        ChunkModelPreset         = $chunkModelPreset
-
-                                        Status                   = 'Queued'
-                                        QueuedTime               = Get-Date
-                                        IsReprocess              = $true
-                                    }
-
-                                    # Add to queue and update status - preserve existing fields
-                                    Add-QueueItem $reprocessItem
+                                    # Folder-based queue stores only the document ID; full job
+                                    # details live in the status file (same as Start-DocumentConversion).
+                                    Add-QueueItemFolder $documentId
+                                    # Update status - preserve existing fields
                                     Update-ItemStatus $documentId @{
                                         Status                   = 'Queued'
                                         ExportFormat             = $newFormat
@@ -5367,7 +5346,7 @@ Function Clear-PSDoclingSystem {
 
 # Public: Get-DoclingSystemStatus
 function Get-DoclingSystemStatus {
-    $queue = Get-QueueItems
+    $queue = Get-QueueItemsFolder
     $allStatus = Get-ProcessingStatus
     $processing = $allStatus.Values | Where-Object { $_.Status -eq 'Processing' }
     $allCompleted = $allStatus.Values | Where-Object { $_.Status -eq 'Completed' }

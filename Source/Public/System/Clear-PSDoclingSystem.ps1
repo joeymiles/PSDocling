@@ -27,7 +27,7 @@ Function Clear-PSDoclingSystem {
     # Clear the queue folder (new folder-based queue)
     $queueFolder = "$env:TEMP\DoclingQueue"
     if (Test-Path $queueFolder) {
-        $queueCount = (Get-ChildItem $queueFolder -Filter "*.queue" -ErrorAction SilentlyContinue).Count
+        $queueCount = @(Get-ChildItem $queueFolder -Filter "*.queue" -ErrorAction SilentlyContinue).Count
         if ($queueCount -gt 0) {
             Remove-Item "$queueFolder\*.queue" -Force
             Write-Host "Cleared $queueCount items from queue folder" -ForegroundColor Green
@@ -57,16 +57,27 @@ Function Clear-PSDoclingSystem {
         Write-Host "Status file doesn't exist" -ForegroundColor Gray
     }
 
-    # Optional: Clear processed documents directory
-    $processedDir = ".\ProcessedDocuments"
-    if (Test-Path $processedDir) {
-        $docCount = (Get-ChildItem $processedDir -Directory).Count
-        if ($docCount -gt 0) {
-            Write-Host "Found $docCount document folders in ProcessedDocuments" -ForegroundColor Yellow
-            $clearDocs = Read-Host "Clear ProcessedDocuments folder too? (Y/N)"
-            if ($clearDocs -eq 'Y') {
-                Remove-Item "$processedDir\*" -Recurse -Force
-                Write-Host "Cleared ProcessedDocuments" -ForegroundColor Green
+    # Optional: Clear output directories (module OutputDirectory + legacy relative path)
+    $processedDirs = @()
+    if ($script:DoclingSystem -and $script:DoclingSystem.OutputDirectory) {
+        $processedDirs += $script:DoclingSystem.OutputDirectory
+    }
+    $processedDirs += @(".\ProcessedDocuments", "$env:TEMP\DoclingOutput")
+    $processedDirs = $processedDirs | Where-Object { $_ } | Select-Object -Unique
+    foreach ($processedDir in $processedDirs) {
+        if (Test-Path $processedDir) {
+            $docCount = @(Get-ChildItem $processedDir -Directory -ErrorAction SilentlyContinue).Count
+            if ($docCount -gt 0) {
+                Write-Host "Found $docCount document folders in $processedDir" -ForegroundColor Yellow
+                $doClear = [bool]$Force
+                if (-not $Force) {
+                    $clearDocs = Read-Host "Clear $processedDir folder too? (Y/N)"
+                    $doClear = ($clearDocs -eq 'Y')
+                }
+                if ($doClear) {
+                    Remove-Item "$processedDir\*" -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Host "Cleared $processedDir" -ForegroundColor Green
+                }
             }
         }
     }
@@ -74,11 +85,15 @@ Function Clear-PSDoclingSystem {
     # Optional: Clear temp processing directory
     $tempDir = "$env:TEMP\DoclingProcessor"
     if (Test-Path $tempDir) {
-        $tempCount = (Get-ChildItem $tempDir -Directory -ErrorAction SilentlyContinue).Count
+        $tempCount = @(Get-ChildItem $tempDir -Directory -ErrorAction SilentlyContinue).Count
         if ($tempCount -gt 0) {
             Write-Host "Found $tempCount temp folders in DoclingProcessor" -ForegroundColor Yellow
-            $clearTemp = Read-Host "Clear temp processing folders? (Y/N)"
-            if ($clearTemp -eq 'Y') {
+            $doClear = [bool]$Force
+            if (-not $Force) {
+                $clearTemp = Read-Host "Clear temp processing folders? (Y/N)"
+                $doClear = ($clearTemp -eq 'Y')
+            }
+            if ($doClear) {
                 Remove-Item "$tempDir\*" -Recurse -Force -ErrorAction SilentlyContinue
                 Write-Host "Cleared temp processing folders" -ForegroundColor Green
             }

@@ -46,7 +46,7 @@ function Stop-DoclingSystem {
     }
 
     # Method 2: Use WMI to search by CommandLine (slower but finds orphaned processes)
-    $wmiProcesses = Get-WmiObject Win32_Process -Filter "Name='powershell.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue
+    $wmiProcesses = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='python.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue
     foreach ($wmiProc in $wmiProcesses) {
         if ($wmiProc.CommandLine) {
             $cmdLine = $wmiProc.CommandLine

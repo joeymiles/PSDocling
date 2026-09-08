@@ -137,7 +137,6 @@ if ($usingBuildDir) {
     $additionalFiles = @(
         'Start-All.ps1',
         'Stop-All.ps1',
-        'HowTo.ps1',
         'README.md',
         'LICENSE'
     )
@@ -160,9 +159,7 @@ if ($usingBuildDir) {
         'PSDocling.psd1',
         'PSDocling.config.psd1',
         'Start-All.ps1',
-        'Stop-All.ps1',
-        'HowTo.ps1',
-        'CLAUDE.md'
+        'Stop-All.ps1'
     )
 
     foreach ($file in $filesToCopy) {

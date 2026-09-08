@@ -1,9 +1,8 @@
-﻿<#
+<#
 .SYNOPSIS
     Set-QueueItems function from PSDocling module
 .DESCRIPTION
     Extracted from monolithic PSDocling.psm1
-    Original module by: Jaga
 .NOTES
     Part of PSDocling Document Processing System
 #>

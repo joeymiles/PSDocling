@@ -188,11 +188,10 @@ Get-ProcessingStatus | Format-List
 1. **Read the appropriate guide** based on your needs
 2. **Try the examples** in each guide
 3. **Experiment with options** to find what works best
-4. **Check the HowTo.ps1** file for more examples
 
 ## Version Information
 
-- **Current Version**: 3.0.0
+- **Current Version**: 3.2.0
 - **Module Type**: PowerShell Script Module
 - **License**: See LICENSE file
 - **Repository**: https://github.com/joeymiles/PSDocling

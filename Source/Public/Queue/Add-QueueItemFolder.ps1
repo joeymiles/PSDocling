@@ -2,7 +2,8 @@
 .SYNOPSIS
     Adds a document to the folder-based queue
 .DESCRIPTION
-    Creates a queue file in the queue folder representing a job to process
+    Creates a queue file in the queue folder representing a job to process.
+    Uses the same mutex as Get-NextQueueItemFolder to avoid races with claimers.
 .NOTES
     Part of PSDocling Document Processing System
 #>
@@ -12,20 +13,23 @@ function Add-QueueItemFolder {
         [string]$DocumentId
     )
 
-    # Ensure queue folder exists
     $queueFolder = "$env:TEMP\DoclingQueue"
-    if (-not (Test-Path $queueFolder)) {
-        New-Item -Path $queueFolder -ItemType Directory -Force | Out-Null
-    }
+    $localQueueFolder = $queueFolder
+    $localDocumentId = $DocumentId
 
-    # Create a queue file for this document
-    # File name format: timestamp_documentId.queue
-    $timestamp = [DateTime]::Now.ToString("yyyyMMddHHmmssffff")
-    $queueFile = Join-Path $queueFolder "${timestamp}_${DocumentId}.queue"
+    $result = Use-FileMutex -Name "queuefolder" -Script {
+        if (-not (Test-Path $localQueueFolder)) {
+            New-Item -Path $localQueueFolder -ItemType Directory -Force | Out-Null
+        }
 
-    # Write the document ID to the file (simple content)
-    $DocumentId | Set-Content -Path $queueFile -Encoding UTF8
+        # File name format: timestamp_documentId.queue
+        $timestamp = [DateTime]::Now.ToString("yyyyMMddHHmmssffff")
+        $queueFile = Join-Path $localQueueFolder "${timestamp}_${localDocumentId}.queue"
 
-    Write-Verbose "Added to queue: $DocumentId (File: $queueFile)"
-    return $queueFile
+        $localDocumentId | Set-Content -Path $queueFile -Encoding UTF8
+        Write-Verbose "Added to queue: $localDocumentId (File: $queueFile)"
+        return $queueFile
+    }.GetNewClosure()
+
+    return $result
 }

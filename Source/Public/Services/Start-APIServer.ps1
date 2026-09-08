@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Start-APIServer function from PSDocling module
 .DESCRIPTION
@@ -505,41 +505,10 @@ function Start-APIServer {
                                     } | ConvertTo-Json
                                 }
                                 else {
-                                    # Create new queue item for reprocessing
-                                    $reprocessItem = @{
-                                        Id                       = $documentId  # Keep same ID to update existing entry
-                                        FilePath                 = $currentStatus.FilePath
-                                        FileName                 = $currentStatus.FileName
-                                        ExportFormat             = $newFormat
-                                        EmbedImages              = $embedImages
-                                        EnrichCode               = $enrichCode
-                                        EnrichFormula            = $enrichFormula
-                                        EnrichPictureClasses     = $enrichPictureClasses
-                                        EnrichPictureDescription = $enrichPictureDescription
-
-                                        # Chunking Options
-                                        EnableChunking           = $enableChunking
-                                        ChunkTokenizerBackend    = $chunkTokenizerBackend
-                                        ChunkTokenizerModel      = $chunkTokenizerModel
-                                        ChunkOpenAIModel         = $chunkOpenAIModel
-                                        ChunkMaxTokens           = $chunkMaxTokens
-                                        ChunkMergePeers          = $chunkMergePeers
-                                        ChunkIncludeContext      = $chunkIncludeContext
-                                        ChunkTableSerialization  = $chunkTableSerialization
-                                        ChunkPictureStrategy     = $chunkPictureStrategy
-                                        ChunkImagePlaceholder    = $chunkImagePlaceholder
-                                        ChunkOverlapTokens       = $chunkOverlapTokens
-                                        ChunkPreserveSentences   = $chunkPreserveSentences
-                                        ChunkPreserveCode        = $chunkPreserveCode
-                                        ChunkModelPreset         = $chunkModelPreset
-
-                                        Status                   = 'Queued'
-                                        QueuedTime               = Get-Date
-                                        IsReprocess              = $true
-                                    }
-
-                                    # Add to queue and update status - preserve existing fields
-                                    Add-QueueItem $reprocessItem
+                                    # Folder-based queue stores only the document ID; full job
+                                    # details live in the status file (same as Start-DocumentConversion).
+                                    Add-QueueItemFolder $documentId
+                                    # Update status - preserve existing fields
                                     Update-ItemStatus $documentId @{
                                         Status                   = 'Queued'
                                         ExportFormat             = $newFormat

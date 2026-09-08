@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Module initialization code for PSDocling
 .DESCRIPTION
@@ -12,7 +12,7 @@ $script:DoclingSystem = @{
     Version          = "3.2.0"
     ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
-    OutputDirectory  = ".\ProcessedDocuments"
+    OutputDirectory  = "$env:TEMP\DoclingOutput"
     APIPort          = 8080
     WebPort          = 8081
     QueueFile        = "$env:TEMP\docling_queue.json"
@@ -22,3 +22,4 @@ $script:DoclingSystem = @{
 }
 
 # Function to check and install required Python packages
+

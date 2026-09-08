@@ -1,4 +1,4 @@
-﻿param([int]$Port = 8081)
+param([int]$Port = 8081)
 
 $http = New-Object System.Net.HttpListener
 $prefix = "http://localhost:$Port/"

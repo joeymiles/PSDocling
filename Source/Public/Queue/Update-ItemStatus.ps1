@@ -78,6 +78,19 @@ function Update-ItemStatus {
         }
 
         # Write back atomically
+        # Normalize DateTime values to ISO-8601 strings for stable JSON across processes
+        foreach ($docKey in @($status.Keys)) {
+            $doc = $status[$docKey]
+            if ($doc -is [hashtable]) {
+                foreach ($fk in @($doc.Keys)) {
+                    if ($doc[$fk] -is [DateTime]) { $doc[$fk] = $doc[$fk].ToString("o") }
+                }
+            } elseif ($doc -is [PSCustomObject]) {
+                foreach ($prop in @($doc.PSObject.Properties)) {
+                    if ($prop.Value -is [DateTime]) { $doc | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value.ToString("o") -Force }
+                }
+            }
+        }
         $tempFile = "$localStatusFile.tmp"
         $status | ConvertTo-Json -Depth 10 | Set-Content $tempFile -Encoding UTF8
         Move-Item -Path $tempFile -Destination $localStatusFile -Force

@@ -271,7 +271,7 @@ function New-FrontendFiles {
             <div class="drop" id="drop-zone" tabindex="0" role="button" aria-label="Drop files here or press Enter to browse">
                 <div class="shimmer" aria-hidden="true"></div>
                 <h3>Drop files here or <span class="link" onclick="document.getElementById('file-input').click()">browse</span></h3>
-                <p class="muted">Max 100MB per file • Press <span class="kbd">Enter</span> to open file picker</p>
+                <p class="muted">Max 100MB per file - Press <span class="kbd">Enter</span> to open file picker</p>
                 <button class="btn" style="margin-top:10px" onclick="document.getElementById('file-input').click()">Choose Files</button>
                 <input type="file" id="file-input" multiple accept=".pdf,.docx,.xlsx,.pptx,.md,.html,.xhtml,.csv,.png,.jpg,.jpeg,.tiff,.bmp,.webp" class="sr-only" aria-hidden="true" />
                 <div style="margin-top:18px">
@@ -288,7 +288,7 @@ function New-FrontendFiles {
 
             <div id="upload-progress" class="card" style="margin-top:14px; display:none">
                 <div class="row" style="justify-content:space-between">
-                    <p class="muted" style="margin:0">Uploading files…</p>
+                    <p class="muted" style="margin:0">Uploading files...</p>
                     <span class="chip">Transfer</span>
                 </div>
                 <div class="progress" style="margin-top:10px"><div class="progress-bar" id="progress-bar"></div></div>
@@ -331,7 +331,7 @@ function New-FrontendFiles {
                 <button class="btn-ghost" onclick="downloadAllDocuments()">Download All</button>
             </div>
             <div id="files-list" style="margin-top:10px">
-                <p class="muted" style="font-style:italic">Loading processed files…</p>
+                <p class="muted" style="font-style:italic">Loading processed files...</p>
             </div>
         </section>
     </main>
@@ -344,7 +344,7 @@ function New-FrontendFiles {
                 <span class="close" aria-label="Close error details" role="button">&times;</span>
             </div>
             <div id="errorModalContent">
-                <p class="muted">Loading error details…</p>
+                <p class="muted">Loading error details...</p>
             </div>
         </div>
     </div>
@@ -1486,7 +1486,7 @@ function New-FrontendFiles {
 </html>
 "@
 
-    $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding UTF8
+    $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding utf8NoBOM
 
     # Smarter web server (serves correct MIME types, basic cache headers, 404 handling)
     $webServer = @'
@@ -1563,7 +1563,7 @@ try {
 }
 '@
 
-    $webServer | Set-Content (Join-Path $frontendDir "Start-WebServer.ps1") -Encoding UTF8
+    $webServer | Set-Content (Join-Path $frontendDir "Start-WebServer.ps1") -Encoding utf8NoBOM
 
     Write-Host "Frontend files created in $frontendDir" -ForegroundColor Green
 }

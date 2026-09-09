@@ -36,7 +36,7 @@ if (Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue) {
     $manifest = Import-PowerShellDataFile $manifestPath
     $version = $manifest.ModuleVersion
 } else {
-    $version = "3.3.1"
+    $version = "3.3.2"
 }
 Write-Host "Building version: $version"
 Write-Host "Repo root: $RepoRoot"

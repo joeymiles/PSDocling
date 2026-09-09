@@ -58,7 +58,10 @@ if (-not $SkipBuild) {
     }
     Write-Info "Building module from Source/..."
     & $buildScript -OutputPath $buildDir
-    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+    # Build-PSDoclingModule.ps1 is a PowerShell script and does not set a process
+    # exit code. $LASTEXITCODE is often stale from a prior native command — do not
+    # use it here. Prefer $? and verify built artifacts below.
+    if (-not $?) {
         Write-Err "Build failed"
         exit 1
     }
@@ -67,83 +70,107 @@ if (-not $SkipBuild) {
 $builtModule = Join-Path $buildDir 'PSDocling.psm1'
 $builtManifest = Join-Path $buildDir 'PSDocling.psd1'
 if (-not (Test-Path $builtModule) -or -not (Test-Path $builtManifest)) {
-    Write-Err "Built module not found in $buildDir"
+    Write-Err "Built module not found in $buildDir (expected PSDocling.psm1 and PSDocling.psd1)"
     Write-Info "Run .\scripts\Build-PSDoclingModule.ps1 or re-run this installer without -SkipBuild"
     exit 1
 }
 
+# Resolve install destination(s). Primary path matches the current host edition.
+# When roots differ (Desktop 5.1 vs Core 7+), also install to the sibling root so
+# both powershell.exe and pwsh see the same CurrentUser/AllUsers module.
+$desktopUser = Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
+$coreUser    = Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules'
+$desktopAll  = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+$coreAll     = Join-Path $env:ProgramFiles 'PowerShell\Modules'
+
+$destBases = New-Object System.Collections.Generic.List[string]
 if ($Scope -eq 'AllUsers') {
-    $destBase = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
-} else {
-    $destBase = Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
-}
-if ($PSVersionTable.PSEdition -eq 'Core') {
-    if ($Scope -eq 'AllUsers') {
-        $destBase = Join-Path $env:ProgramFiles 'PowerShell\Modules'
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [void]$destBases.Add($coreAll)
+        if ($desktopAll -ne $coreAll) { [void]$destBases.Add($desktopAll) }
     } else {
-        $destBase = Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules'
+        [void]$destBases.Add($desktopAll)
+    }
+} else {
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [void]$destBases.Add($coreUser)
+        if ($desktopUser -ne $coreUser) { [void]$destBases.Add($desktopUser) }
+    } else {
+        [void]$destBases.Add($desktopUser)
+        if ($coreUser -ne $desktopUser) { [void]$destBases.Add($coreUser) }
     }
 }
 
-$destDir = Join-Path $destBase $moduleName
+$destDirs = @($destBases | ForEach-Object { Join-Path $_ $moduleName } | Select-Object -Unique)
 
 Write-Info "Installing PSDocling module..."
 Write-Info "Source (repo): $RepoRoot"
 Write-Info "Build output:  $buildDir"
-Write-Info "Destination:   $destDir"
+Write-Info "Destination(s): $($destDirs -join '; ')"
 Write-Info "Scope:         $Scope"
 
-if (Test-Path $destDir) {
-    if ($Force) {
-        Write-Warn "Module directory exists, removing due to -Force flag..."
-        Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-        Remove-Item $destDir -Recurse -Force
-    } else {
-        Write-Err "Module already installed at $destDir"
-        Write-Info "Use -Force to overwrite, or uninstall with: .\scripts\Uninstall-DoclingModule.ps1"
-        exit 1
+foreach ($destDir in $destDirs) {
+    if (Test-Path $destDir) {
+        if ($Force) {
+            Write-Warn "Module directory exists at $destDir, removing due to -Force flag..."
+            Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
+            Remove-Item $destDir -Recurse -Force
+        } else {
+            Write-Err "Module already installed at $destDir"
+            Write-Info "Use -Force to overwrite, or uninstall with: .\scripts\Uninstall-DoclingModule.ps1"
+            exit 1
+        }
     }
 }
 
-New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+function Copy-PSDoclingInstall {
+    param([string]$DestDir)
 
-foreach ($file in @('PSDocling.psm1', 'PSDocling.psd1', 'PSDocling.config.psd1')) {
-    $sourcePath = Join-Path $buildDir $file
-    if (Test-Path $sourcePath) {
-        Copy-Item $sourcePath (Join-Path $destDir $file) -Force
-        Write-Info "Copied: $file (from Build)"
+    New-Item -Path $DestDir -ItemType Directory -Force | Out-Null
+
+    foreach ($file in @('PSDocling.psm1', 'PSDocling.psd1', 'PSDocling.config.psd1')) {
+        $sourcePath = Join-Path $buildDir $file
+        if (Test-Path $sourcePath) {
+            Copy-Item $sourcePath (Join-Path $DestDir $file) -Force
+            Write-Info "Copied: $file (from Build) -> $DestDir"
+        }
     }
-}
 
-$frontendSrc = Join-Path $RepoRoot 'DoclingFrontend'
-if (Test-Path $frontendSrc) {
-    Copy-Item $frontendSrc (Join-Path $destDir 'DoclingFrontend') -Recurse -Force
-    Write-Info "Copied: DoclingFrontend/"
-}
-
-$pyWebViewSrc = Join-Path $PSScriptRoot 'Launch-PyWebView.py'
-if (Test-Path $pyWebViewSrc) {
-    Copy-Item $pyWebViewSrc (Join-Path $destDir 'Launch-PyWebView.py') -Force
-    Write-Info "Copied: Launch-PyWebView.py"
-}
-
-foreach ($file in @('README.md', 'LICENSE', 'requirements-webview.txt')) {
-    $sourcePath = Join-Path $RepoRoot $file
-    if (Test-Path $sourcePath) {
-        Copy-Item $sourcePath (Join-Path $destDir $file) -Force
-        Write-Info "Copied: $file"
+    $frontendSrc = Join-Path $RepoRoot 'DoclingFrontend'
+    if (Test-Path $frontendSrc) {
+        Copy-Item $frontendSrc (Join-Path $DestDir 'DoclingFrontend') -Recurse -Force
+        Write-Info "Copied: DoclingFrontend/ -> $DestDir"
     }
-}
 
-$stopAll = @"
+    $pyWebViewSrc = Join-Path $PSScriptRoot 'Launch-PyWebView.py'
+    if (Test-Path $pyWebViewSrc) {
+        Copy-Item $pyWebViewSrc (Join-Path $DestDir 'Launch-PyWebView.py') -Force
+        Write-Info "Copied: Launch-PyWebView.py -> $DestDir"
+    }
+
+    foreach ($file in @('README.md', 'LICENSE', 'requirements-webview.txt')) {
+        $sourcePath = Join-Path $RepoRoot $file
+        if (Test-Path $sourcePath) {
+            Copy-Item $sourcePath (Join-Path $DestDir $file) -Force
+            Write-Info "Copied: $file -> $DestDir"
+        }
+    }
+
+    $stopAll = @"
 Import-Module `$PSScriptRoot -Force
 Stop-DoclingSystem -ClearQueue
 "@
-Set-Content -Path (Join-Path $destDir 'Stop-All.ps1') -Value $stopAll -Encoding UTF8
+    Set-Content -Path (Join-Path $DestDir 'Stop-All.ps1') -Value $stopAll -Encoding UTF8
+}
 
-Write-Info "Testing module import..."
+foreach ($destDir in $destDirs) {
+    Copy-PSDoclingInstall -DestDir $destDir
+}
+
+$primaryDest = $destDirs[0]
+Write-Info "Testing module import from $primaryDest..."
 try {
-    Import-Module $destDir -Force
+    Import-Module $primaryDest -Force
     $moduleInfo = Get-Module PSDocling
     if ($moduleInfo) {
         Write-Ok "Module installed successfully!"

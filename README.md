@@ -2,7 +2,7 @@
 
 PowerShell module that wraps Python [Docling](https://docling-project.github.io/docling/) for document conversion. Convert PDFs, Office files, HTML, Markdown, CSV, and images to Markdown, HTML, JSON, plain text, or DocTags, with an optional REST API and web UI.
 
-**Version:** 3.3.1 - **License:** MIT
+**Version:** 3.3.2 - **License:** MIT
 
 ## Requirements
 

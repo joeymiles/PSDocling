@@ -31,7 +31,7 @@ function New-FrontendFiles {
 
     # Pull version from module context if present, otherwise default
     $version = $script:DoclingSystem.Version
-    if (-not $version) { $version = "3.3.0" }
+    if (-not $version) { $version = "3.3.1" }
 
     # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
     $html = @"
@@ -1500,7 +1500,7 @@ function New-FrontendFiles {
 </html>
 "@
 
-    $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $frontendDir "index.html"), $html, [System.Text.UTF8Encoding]::new($false))
 
     # Smarter web server (serves correct MIME types, basic cache headers, 404 handling)
     $webServer = @'
@@ -1577,7 +1577,7 @@ try {
 }
 '@
 
-    $webServer | Set-Content (Join-Path $frontendDir "Start-WebServer.ps1") -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $frontendDir "Start-WebServer.ps1"), $webServer, [System.Text.UTF8Encoding]::new($false))
 
     Write-Host "Frontend files created in $frontendDir" -ForegroundColor Green
 }

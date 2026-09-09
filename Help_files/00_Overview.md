@@ -194,7 +194,7 @@ Get-ProcessingStatus | Format-List
 
 ## Version Information
 
-- **Current Version**: 3.2.0
+- **Current Version**: 3.3.0
 - **Module Type**: PowerShell Script Module
 - **License**: See LICENSE file
 - **Repository**: https://github.com/joeymiles/PSDocling

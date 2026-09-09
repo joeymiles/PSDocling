@@ -101,5 +101,6 @@ Function Clear-PSDoclingSystem {
     }
 
     Write-Host "`nSystem cleared!" -ForegroundColor Green
-    Write-Host "You can now restart the system with: .\Start-All.ps1" -ForegroundColor Cyan
+    Write-Host "You can now restart the system with: .\scripts\Start-All.ps1" -ForegroundColor Cyan
 }
+

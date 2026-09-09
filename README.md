@@ -13,39 +13,37 @@ PowerShell module that wraps Python [Docling](https://docling-project.github.io/
 
 ## Install
 
+After clone, run the installer once. It **builds from `Source/` then installs** — no separate Build step.
+
 ```powershell
 git clone https://github.com/joeymiles/PSDocling.git
 cd PSDocling
 
-# Build module from Source/
-.\Build-PSDoclingModule.ps1
-
-# Install for current user (or -Scope AllUsers)
-.\Install-DoclingModule.ps1
+.\scripts\Install-DoclingModule.ps1
 ```
 
-To work from the repo without installing:
+Force reinstall:
 
 ```powershell
-Import-Module .\Build\PSDocling.psm1 -Force
+.\scripts\Install-DoclingModule.ps1 -Force
 ```
 
 ## Quick start
 
 ```powershell
-# Start API + processor + web UI
-.\Start-All.ps1 -GenerateFrontend -OpenBrowser
+Import-Module PSDocling
+Initialize-DoclingSystem -GenerateFrontend
+Start-DoclingSystem -OpenBrowser
 
-# Stop services
-.\Stop-All.ps1
+# When finished
+Stop-DoclingSystem
 ```
 
-Or via module commands:
+Thin wrappers (same thing from the repo):
 
 ```powershell
-Import-Module PSDocling
-Start-DoclingSystem -GenerateFrontend -OpenBrowser
-Stop-DoclingSystem
+.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
+.\scripts\Stop-All.ps1
 ```
 
 ## Ports and paths
@@ -57,18 +55,18 @@ Stop-DoclingSystem
 | Queue folder | `$env:TEMP\DoclingQueue` |
 | Status file | `$env:TEMP\docling_status.json` |
 | Working temp | `$env:TEMP\DoclingProcessor` |
-| Output | `.\ProcessedDocuments` |
+| Output | `$env:TEMP\DoclingOutput` |
 
-Custom ports:
+Custom ports via wrapper:
 
 ```powershell
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
+.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
 ```
 
 Simulation mode (no Python/Docling):
 
 ```powershell
-.\Start-All.ps1 -SkipPythonCheck -GenerateFrontend -OpenBrowser
+.\scripts\Start-All.ps1 -SkipPythonCheck -GenerateFrontend -OpenBrowser
 ```
 
 ## Architecture
@@ -87,8 +85,6 @@ Three cooperating processes: an HTTP API server, a background document processor
 
 ## Documentation
 
-Install and usage guides:
-
 - [Overview](Help_files/00_Overview.md)
 - [Backend services](Help_files/01_Backend_Services.md)
 - [Frontend services](Help_files/02_Frontend_Services.md)
@@ -99,19 +95,32 @@ Get-Help Start-DoclingSystem -Full
 Get-Help Add-DocumentToQueue -Examples
 ```
 
+## Repository layout
+
+```
+PSDocling/
+  Source/           # Module source (authoritative)
+  Build/            # Built .psm1/.psd1 (produced by install/build)
+  DoclingFrontend/  # Static web UI + Start-WebServer.ps1
+  scripts/          # Install, Build, Start/Stop wrappers, PyWebView launcher
+  Tests/            # Audit + E2E smoke tests
+  Help_files/       # User guides
+  PSDocling.psd1    # Manifest (copied into Build/ on build)
+```
+
 ## Development
 
 ```powershell
-.\Build-PSDoclingModule.ps1
+.\scripts\Build-PSDoclingModule.ps1
 .\Tests\Test-AuditFixes.ps1
 ```
 
-Source lives under `Source/`; the build concatenates it into `Build/PSDocling.psm1` and copies `PSDocling.psd1`.
+The installer always rebuilds from `Source/` unless you pass `-SkipBuild`. Developers can iterate with Build alone and `Import-Module .\Build\PSDocling.psm1 -Force`.
 
 ## Uninstall
 
 ```powershell
-.\Uninstall-DoclingModule.ps1
+.\scripts\Uninstall-DoclingModule.ps1
 ```
 
 ## License

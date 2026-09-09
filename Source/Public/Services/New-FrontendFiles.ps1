@@ -10,7 +10,21 @@ function New-FrontendFiles {
     [CmdletBinding()]
     param()
 
-    $frontendDir = ".\DoclingFrontend"
+    $frontendCandidates = @(
+        (Join-Path $PSScriptRoot 'DoclingFrontend'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'DoclingFrontend'),
+        (Join-Path (Get-Location) 'DoclingFrontend')
+    )
+    $frontendDir = $null
+    foreach ($candidate in $frontendCandidates) {
+        if ($candidate -and (Test-Path (Split-Path $candidate -Parent))) {
+            # Prefer existing frontend dir; else first writable candidate parent
+            if (Test-Path $candidate) { $frontendDir = $candidate; break }
+        }
+    }
+    if (-not $frontendDir) {
+        $frontendDir = Join-Path $PSScriptRoot 'DoclingFrontend'
+    }
     if (-not (Test-Path $frontendDir)) {
         New-Item -ItemType Directory -Path $frontendDir -Force | Out-Null
     }
@@ -1567,3 +1581,4 @@ try {
 
     Write-Host "Frontend files created in $frontendDir" -ForegroundColor Green
 }
+

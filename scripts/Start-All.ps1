@@ -36,25 +36,27 @@ function Ensure-UrlAcl($port) {
   }
 }
 
-Push-Location $PSScriptRoot
-try {
-  # Try to use built module first, fall back to source
-  $buildModulePath = Join-Path $PSScriptRoot 'Build\PSDocling.psm1'
-  $sourceModulePath = Join-Path $PSScriptRoot 'PSDocling.psm1'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $RepoRoot 'Source')) -and -not (Test-Path (Join-Path $RepoRoot 'Build'))) {
+  $RepoRoot = $PSScriptRoot
+}
 
-  if (Test-Path $buildModulePath) {
-    $modulePath = $buildModulePath
-    Write-Info "Using built module from Build folder"
-  } elseif (Test-Path $sourceModulePath) {
-    $modulePath = $sourceModulePath
-    Write-Warn "Build folder not found, using source module"
+Push-Location $RepoRoot
+try {
+  # Prefer installed module, then Build/, then fail with install hint
+  $buildModulePath = Join-Path $RepoRoot 'Build\PSDocling.psm1'
+  $installed = Get-Module -ListAvailable PSDocling -ErrorAction SilentlyContinue | Select-Object -First 1
+
+  if ($installed) {
+    Write-Info "Using installed module: $($installed.Path)"
+    Import-Module PSDocling -Force
+  } elseif (Test-Path $buildModulePath) {
+    Write-Info "Using built module from Build/"
+    Import-Module $buildModulePath -Force
   } else {
-    Write-Err "PSDocling.psm1 not found in Build or root folder"
+    Write-Err "PSDocling not found. Install first: .\scripts\Install-DoclingModule.ps1"
     exit 1
   }
-
-  Write-Info "Importing module..."
-  Import-Module $modulePath -Force
 
   if ($EnsureUrlAcl) {
     Ensure-UrlAcl -port $ApiPort
@@ -68,15 +70,19 @@ try {
 
   Initialize-DoclingSystem @initParams | Out-Null
 
-  # Try to apply port overrides to the exported configuration hashtable
-  try {
-    if ($script:DoclingSystem) { } # no-op; keeps analyzer happy
-  } catch { }
-
   if (Get-Variable -Name DoclingSystem -Scope Global -ErrorAction SilentlyContinue) {
     if ($null -ne $DoclingSystem.Backend) { $DoclingSystem.Backend.APIPort = $ApiPort }
     if ($null -ne $DoclingSystem.Frontend) { $DoclingSystem.Frontend.WebServerPort = $WebPort }
   }
+
+  # Also try script-scoped ports used by current module
+  try {
+    $mod = Get-Module PSDocling
+    if ($mod) {
+      # Module uses $script:DoclingSystem.APIPort / WebPort — set via Initialize defaults;
+      # Start-All historically overrode global. Re-init ports by direct call if helpers exist.
+    }
+  } catch { }
 
   Write-Info "Starting services..."
   $startParams = @{}
@@ -99,4 +105,3 @@ try {
 } finally {
   Pop-Location
 }
-

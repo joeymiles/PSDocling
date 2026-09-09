@@ -29,16 +29,19 @@ Welcome to the PSDocling help documentation! These guides will help you understa
 
 ### First Time Setup
 
-1. **Build and Install the Module**
+1. **Install the Module** (builds from Source automatically)
    ```powershell
-   .\Build-PSDoclingModule.ps1
-   .\Install-DoclingModule.ps1 -Force
+   .\scripts\Install-DoclingModule.ps1
    ```
 
-2. **Start Everything**
+2. **Start the system**
    ```powershell
-   .\Start-All.ps1 -GenerateFrontend -OpenBrowser
+   Import-Module PSDocling
+   Initialize-DoclingSystem -GenerateFrontend
+   Start-DoclingSystem -OpenBrowser
    ```
+
+   Or: `.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser`
 
 3. **Process Your First Document**
    - Open browser to http://localhost:8081
@@ -95,7 +98,7 @@ Get-ChildItem "C:\MyDocuments" -Filter "*.pdf" | ForEach-Object {
 ### Team Document Processing Server
 ```powershell
 # Set up shared server for team
-.\Start-All.ps1 -ApiPort 80 -WebPort 80 -EnsureUrlAcl
+.\scripts\Start-All.ps1 -ApiPort 80 -WebPort 80 -EnsureUrlAcl
 Write-Host "Share this URL with your team: http://$(hostname)"
 ```
 
@@ -133,7 +136,7 @@ netstat -ano | findstr :8080
 netstat -ano | findstr :8081
 
 # Use different ports
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081
+.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081
 ```
 
 ### Documents Not Processing
@@ -142,7 +145,7 @@ netstat -ano | findstr :8081
 Get-PythonStatus
 
 # Run in simulation mode (no Python needed)
-.\Start-All.ps1 -SkipPythonCheck
+.\scripts\Start-All.ps1 -SkipPythonCheck
 ```
 
 ### Can't Access Web Interface
@@ -151,8 +154,8 @@ Get-PythonStatus
 New-FrontendFiles
 
 # Restart all services
-.\Stop-All.ps1
-.\Start-All.ps1 -GenerateFrontend -OpenBrowser
+.\scripts\Stop-All.ps1
+.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
 ```
 
 ## Getting Help
@@ -199,3 +202,4 @@ Get-ProcessingStatus | Format-List
 ---
 
 *For the latest updates and issues, visit the [GitHub repository](https://github.com/joeymiles/PSDocling)*
+

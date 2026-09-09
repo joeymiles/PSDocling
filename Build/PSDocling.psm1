@@ -1,10 +1,10 @@
 ﻿#Requires -Version 5.1
 # PSDocling Module - Built from source files
 # Docling Document Processing System
-# Version: 3.3.0
+# Version: 3.3.1
 
 $script:DoclingSystem = @{
-    Version          = "3.3.0"
+    Version          = "3.3.1"
     ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = "$env:TEMP\DoclingOutput"
@@ -1943,7 +1943,7 @@ function New-FrontendFiles {
 
     # Pull version from module context if present, otherwise default
     $version = $script:DoclingSystem.Version
-    if (-not $version) { $version = "3.3.0" }
+    if (-not $version) { $version = "3.3.1" }
 
     # Redesigned HTML (dark/light theme, a11y, keyboard support, and UI polish)
     $html = @"
@@ -3412,7 +3412,7 @@ function New-FrontendFiles {
 </html>
 "@
 
-    $html | Set-Content (Join-Path $frontendDir "index.html") -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $frontendDir "index.html"), $html, [System.Text.UTF8Encoding]::new($false))
 
     # Smarter web server (serves correct MIME types, basic cache headers, 404 handling)
     $webServer = @'
@@ -3489,7 +3489,7 @@ try {
 }
 '@
 
-    $webServer | Set-Content (Join-Path $frontendDir "Start-WebServer.ps1") -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $frontendDir "Start-WebServer.ps1"), $webServer, [System.Text.UTF8Encoding]::new($false))
 
     Write-Host "Frontend files created in $frontendDir" -ForegroundColor Green
 }
@@ -5779,5 +5779,5 @@ function Stop-DoclingSystem {
 
 Export-ModuleMember -Function @('Get-DoclingConfiguration', 'Set-DoclingConfiguration', 'Get-ProcessingStatus', 'Invoke-DoclingHybridChunking', 'Optimize-ChunksForRAG', 'Set-ProcessingStatus', 'Start-DocumentConversion', 'Test-EnhancedChunking', 'Add-DocumentToQueue', 'Add-QueueItem', 'Add-QueueItemFolder', 'Get-NextQueueItem', 'Get-NextQueueItemFolder', 'Get-QueueItems', 'Get-QueueItemsFolder', 'Set-QueueItems', 'Update-ItemStatus', 'New-FrontendFiles', 'Start-APIServer', 'Start-DocumentProcessor', 'Clear-PSDoclingSystem', 'Get-DoclingSystemStatus', 'Get-PythonStatus', 'Initialize-DoclingSystem', 'Set-PythonAvailable', 'Start-DoclingSystem', 'Stop-DoclingSystem')
 
-Write-Host 'PSDocling Module Loaded - Version 3.3.0' -ForegroundColor Cyan
+Write-Host 'PSDocling Module Loaded - Version 3.3.1' -ForegroundColor Cyan
 

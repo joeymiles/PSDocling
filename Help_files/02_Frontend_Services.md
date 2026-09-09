@@ -17,7 +17,7 @@ The PSDocling frontend provides a modern web interface for uploading documents, 
 
 ```powershell
 # Start all services with frontend and open browser
-.\Start-All.ps1 -GenerateFrontend -OpenBrowser
+.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
 ```
 
 ### Manual Start
@@ -44,7 +44,7 @@ Start-Process "http://localhost:8081"
 
 ```powershell
 # 1. Generate frontend files and start services
-.\Start-All.ps1 -GenerateFrontend -OpenBrowser
+.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
 
 # 2. The browser will open automatically
 # If not, navigate to: http://localhost:8081
@@ -74,7 +74,7 @@ Get-ChildItem .\DoclingFrontend
 
 ```powershell
 # Method 1: Using Start-All script
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
+.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
 
 # Method 2: Manual configuration
 $config = Get-DoclingConfiguration
@@ -131,7 +131,7 @@ Add-Content -Path C:\Windows\System32\drivers\etc\hosts `
     -Value "127.0.0.1 $internalHost"
 
 # 3. Configure and start
-.\Start-All.ps1 -ApiPort $apiPort -WebPort $webPort `
+.\scripts\Start-All.ps1 -ApiPort $apiPort -WebPort $webPort `
     -GenerateFrontend -EnsureUrlAcl
 
 # 4. Share URL with team
@@ -300,8 +300,8 @@ The interface provides detailed error information:
    Get-DoclingSystemStatus
 
    # Restart services
-   .\Stop-All.ps1
-   .\Start-All.ps1 -GenerateFrontend
+   .\scripts\Stop-All.ps1
+   .\scripts\Start-All.ps1 -GenerateFrontend
    ```
 
 2. **Files Not Uploading**

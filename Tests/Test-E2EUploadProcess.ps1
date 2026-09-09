@@ -22,7 +22,7 @@ try {
     $health = Invoke-RestMethod "$api/api/health" -TimeoutSec 5
     Assert-True ($health.status -eq 'healthy') "API healthy"
 } catch {
-    throw "API not reachable at $api. Start with: .\Start-All.ps1 -OpenBrowser"
+    throw "API not reachable at $api. Start with: .\scripts\Start-All.ps1 -OpenBrowser"
 }
 
 # Tiny PDF fixture
@@ -92,3 +92,4 @@ $dl = Invoke-WebRequest -Uri "$api/api/download/$docId" -UseBasicParsing -Timeou
 Assert-True ($dl.StatusCode -eq 200 -and $dl.RawContentLength -gt 0) "Download endpoint HTTP 200 with body"
 
 Write-Host "`nE2E smoke passed for $docId" -ForegroundColor Green
+

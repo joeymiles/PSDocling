@@ -1,26 +1,18 @@
 #!/usr/bin/env powershell
-
 <#
 .SYNOPSIS
     Uninstalls the PSDocling PowerShell module
 .DESCRIPTION
-    This script removes the PSDocling module from the PowerShell module directory.
-    It can remove from CurrentUser or AllUsers scope.
+    Removes the PSDocling module from the PowerShell module directory.
 .PARAMETER Scope
     Installation scope to remove from: CurrentUser, AllUsers, or Both (default: CurrentUser)
 .PARAMETER Force
     Force removal without confirmation prompts
 .EXAMPLE
-    .\Uninstall-DoclingModule.ps1
-    Removes from current user scope
+    .\scripts\Uninstall-DoclingModule.ps1
 .EXAMPLE
-    .\Uninstall-DoclingModule.ps1 -Scope AllUsers
-    Removes from all users scope (requires admin)
-.EXAMPLE
-    .\Uninstall-DoclingModule.ps1 -Scope Both -Force
-    Removes from both scopes without prompts
+    .\scripts\Uninstall-DoclingModule.ps1 -Scope Both -Force
 #>
-
 param(
     [ValidateSet('CurrentUser', 'AllUsers', 'Both')]
     [string]$Scope = 'CurrentUser',
@@ -43,29 +35,23 @@ function Remove-ModuleFromScope {
 
     Write-Info "Checking $ScopeName scope..."
 
-    # Get destination directory
     if ($ScopeName -eq 'AllUsers') {
-        $destBase = $env:ProgramFiles + '\WindowsPowerShell\Modules'
-        # Check PowerShell Core path too
-        $destBasePSCore = $env:ProgramFiles + '\PowerShell\Modules'
+        $destBase = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+        $destBasePSCore = Join-Path $env:ProgramFiles 'PowerShell\Modules'
     } else {
-        $destBase = $env:USERPROFILE + '\Documents\WindowsPowerShell\Modules'
-        # Check PowerShell Core path too
-        $destBasePSCore = $env:USERPROFILE + '\Documents\PowerShell\Modules'
+        $destBase = Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
+        $destBasePSCore = Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules'
     }
 
     $moduleName = 'PSDocling'
     $destDir = Join-Path $destBase $moduleName
     $destDirPSCore = Join-Path $destBasePSCore $moduleName
-
     $removed = $false
 
-    # Remove from Windows PowerShell path
     if (Test-Path $destDir) {
         Write-Info "Found module at: $destDir"
         if ($Force -or (Read-Host "Remove module from $destDir? (y/N)") -eq 'y') {
             try {
-                # Try to remove module from memory first
                 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
                 Remove-Item $destDir -Recurse -Force
                 Write-Ok "Removed: $destDir"
@@ -76,12 +62,10 @@ function Remove-ModuleFromScope {
         }
     }
 
-    # Remove from PowerShell Core path
     if (Test-Path $destDirPSCore) {
         Write-Info "Found module at: $destDirPSCore"
         if ($Force -or (Read-Host "Remove module from $destDirPSCore? (y/N)") -eq 'y') {
             try {
-                # Try to remove module from memory first
                 Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
                 Remove-Item $destDirPSCore -Recurse -Force
                 Write-Ok "Removed: $destDirPSCore"
@@ -97,7 +81,6 @@ function Remove-ModuleFromScope {
     }
 }
 
-# Check admin rights for AllUsers scope
 if (($Scope -eq 'AllUsers' -or $Scope -eq 'Both') -and -not (Test-IsAdmin)) {
     Write-Err "Removing from AllUsers scope requires administrator privileges. Run PowerShell as Administrator."
     exit 1
@@ -105,22 +88,14 @@ if (($Scope -eq 'AllUsers' -or $Scope -eq 'Both') -and -not (Test-IsAdmin)) {
 
 Write-Info "Uninstalling PSDocling module..."
 
-# Remove module from memory first
 try {
     Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
     Write-Info "Removed module from current session"
-} catch {
-    # Module not loaded, continue
-}
+} catch { }
 
-# Remove based on scope
 switch ($Scope) {
-    'CurrentUser' {
-        Remove-ModuleFromScope 'CurrentUser'
-    }
-    'AllUsers' {
-        Remove-ModuleFromScope 'AllUsers'
-    }
+    'CurrentUser' { Remove-ModuleFromScope 'CurrentUser' }
+    'AllUsers'    { Remove-ModuleFromScope 'AllUsers' }
     'Both' {
         Remove-ModuleFromScope 'CurrentUser'
         Remove-ModuleFromScope 'AllUsers'

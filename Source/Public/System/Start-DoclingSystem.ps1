@@ -45,26 +45,38 @@ Start-DocumentProcessor
     $procProcess = Start-Process powershell -ArgumentList "-File", $procPath -PassThru -WindowStyle Hidden
     Write-Host "Document processor started" -ForegroundColor Green
 
-    # Start web server
-    $webPath = ".\DoclingFrontend\Start-WebServer.ps1"
-    if (Test-Path $webPath) {
+    # Resolve frontend: installed module dir, repo (sibling of Build/), then cwd
+    $frontendCandidates = @(
+        (Join-Path $PSScriptRoot 'DoclingFrontend'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'DoclingFrontend'),
+        (Join-Path (Get-Location) 'DoclingFrontend')
+    )
+    $frontendDir = $null
+    foreach ($candidate in $frontendCandidates) {
+        if (Test-Path $candidate) {
+            $frontendDir = $candidate
+            break
+        }
+    }
+    $webPath = if ($frontendDir) { Join-Path $frontendDir 'Start-WebServer.ps1' } else { $null }
+
+    if ($webPath -and (Test-Path $webPath)) {
         $webProcess = Start-Process powershell -ArgumentList "-File", $webPath, "-Port", $script:DoclingSystem.WebPort -PassThru -WindowStyle Hidden
         Write-Host "Web server started on port $($script:DoclingSystem.WebPort)" -ForegroundColor Green
 
         if ($UseWebView) {
             Start-Sleep 2
-            # Try multiple locations for the PyWebView script
             $pyWebViewScript = $null
             $searchPaths = @(
-                ".\Launch-PyWebView.py",                          # Current directory
-                (Join-Path $PSScriptRoot "..\..\..\Launch-PyWebView.py"),  # From Build folder
-                (Join-Path (Split-Path $PSScriptRoot -Parent) "..\..\..\Launch-PyWebView.py")  # From nested source
+                (Join-Path $PSScriptRoot 'Launch-PyWebView.py'),
+                (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\Launch-PyWebView.py'),
+                (Join-Path (Get-Location) 'scripts\Launch-PyWebView.py'),
+                (Join-Path (Get-Location) 'Launch-PyWebView.py')
             )
 
             foreach ($path in $searchPaths) {
-                $resolvedPath = Resolve-Path $path -ErrorAction SilentlyContinue
-                if ($resolvedPath -and (Test-Path $resolvedPath)) {
-                    $pyWebViewScript = $resolvedPath.Path
+                if ($path -and (Test-Path $path)) {
+                    $pyWebViewScript = (Resolve-Path $path).Path
                     break
                 }
             }
@@ -89,6 +101,8 @@ Start-DocumentProcessor
             Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
             Write-Host "Frontend opened in browser: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
         }
+    } else {
+        Write-Warning "DoclingFrontend not found. Run Initialize-DoclingSystem -GenerateFrontend or install from the repo."
     }
 
     Write-Host "System running!" -ForegroundColor Green

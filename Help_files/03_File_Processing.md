@@ -458,8 +458,8 @@ Write-Host "All documents processed!" -ForegroundColor Green
    Get-Process | Where-Object {$_.CommandLine -like "*Start-DocumentProcessor*"}
 
    # Restart processor
-   .\Stop-All.ps1
-   .\Start-All.ps1
+   .\scripts\Stop-All.ps1
+   .\scripts\Start-All.ps1
    ```
 
 2. **Processing Failed**

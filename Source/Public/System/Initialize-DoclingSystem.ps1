@@ -68,11 +68,26 @@ function Initialize-DoclingSystem {
         }
     }
 
-    # Always generate frontend files if they don't exist
-    $frontendDir = Join-Path $PSScriptRoot "DoclingFrontend"
+    # Prefer module-adjacent frontend (install dir), then repo checkout, then cwd
+    $frontendCandidates = @(
+        (Join-Path $PSScriptRoot 'DoclingFrontend'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'DoclingFrontend'),
+        (Join-Path (Get-Location) 'DoclingFrontend')
+    )
+    $frontendDir = $null
+    foreach ($candidate in $frontendCandidates) {
+        if (Test-Path $candidate) {
+            $frontendDir = $candidate
+            break
+        }
+    }
+    if (-not $frontendDir) {
+        $frontendDir = Join-Path $PSScriptRoot 'DoclingFrontend'
+    }
     if ($GenerateFrontend -or -not (Test-Path $frontendDir)) {
         New-FrontendFiles
     }
 
     Write-Host "System initialized" -ForegroundColor Green
 }
+

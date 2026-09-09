@@ -29,7 +29,7 @@ Start-DoclingSystem
 
 Or use the convenience script:
 ```powershell
-.\Start-All.ps1
+.\scripts\Start-All.ps1
 ```
 
 ## Default Configuration
@@ -79,7 +79,7 @@ Write-Host "API Status: $($response.status)"
 
 ```powershell
 # Method 1: Using Start-All.ps1 with custom ports
-.\Start-All.ps1 -ApiPort 9080 -WebPort 9081
+.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081
 
 # Method 2: Using module functions
 Import-Module PSDocling
@@ -104,7 +104,7 @@ $config.Server.APIPort = 9080
 Set-DoclingConfiguration -Config $config
 
 # 4. Start services with URL ACL
-.\Start-All.ps1 -EnsureUrlAcl -ApiPort 9080
+.\scripts\Start-All.ps1 -EnsureUrlAcl -ApiPort 9080
 ```
 
 ### Example: Production Setup
@@ -221,7 +221,7 @@ while ($true) {
 
 ```powershell
 # Method 1: Using the convenience script
-.\Stop-All.ps1
+.\scripts\Stop-All.ps1
 
 # Method 2: Using the module function
 Import-Module PSDocling
@@ -250,7 +250,7 @@ Remove-Item "$env:TEMP\DoclingProcessor" -Recurse -Force -ErrorAction SilentlyCo
    netstat -ano | findstr :8080
 
    # Use different port
-   .\Start-All.ps1 -ApiPort 9080
+   .\scripts\Start-All.ps1 -ApiPort 9080
    ```
 
 2. **Access Denied on Custom Domain**
@@ -262,7 +262,7 @@ Remove-Item "$env:TEMP\DoclingProcessor" -Recurse -Force -ErrorAction SilentlyCo
 3. **Python Not Found (Simulation Mode)**
    ```powershell
    # Skip Python check for testing
-   .\Start-All.ps1 -SkipPythonCheck
+   .\scripts\Start-All.ps1 -SkipPythonCheck
    ```
 
 ### Debug Information

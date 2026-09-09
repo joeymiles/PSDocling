@@ -143,7 +143,7 @@ Write-Host "Document processor available at: http://${internalHost}:${webPort}"
 ### Main Interface Components
 
 1. **Header Section**
-   - Title: "PSDocling" with version (v3.3.1 in smaller text)
+   - Title: "PSDocling" with version (v3.3.2 in smaller text)
    - Subtitle: "PowerShell-based Document Processor"
    - Backend Status: Shows "Connected" in Cisco blue when online
 

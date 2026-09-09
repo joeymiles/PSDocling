@@ -6,10 +6,10 @@
 #>
 
 # Docling Document Processing System
-# Version: 3.3.1
+# Version: 3.3.2
 
 $script:DoclingSystem = @{
-    Version          = "3.3.1"
+    Version          = "3.3.2"
     ModulePath       = $PSCommandPath
     TempDirectory    = "$env:TEMP\DoclingProcessor"
     OutputDirectory  = "$env:TEMP\DoclingOutput"

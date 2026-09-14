@@ -4,6 +4,10 @@ PowerShell module that wraps Python [Docling](https://docling-project.github.io/
 
 **Version:** 3.3.2 - **License:** MIT
 
+## Demo
+
+![PSDocling web UI — upload queue and Ready demo documents with export and enrichment options](docs/readme/demo.png)
+
 ## Requirements
 
 - PowerShell 5.1+ or PowerShell Core 6+

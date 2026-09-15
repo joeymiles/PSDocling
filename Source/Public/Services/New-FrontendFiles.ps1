@@ -67,6 +67,7 @@ function New-FrontendFiles {
                 --focus:#1d4ed8; --ring:0 0 0 3px rgba(29,78,216,.25);
                 --shadow:0 8px 30px rgba(10,30,60,.08);
                 --stat-num:#0c4a6e;
+                --warn:#b45309; --err:#b91c1c;
             }
         }
 
@@ -1292,7 +1293,7 @@ function New-FrontendFiles {
             const response = await Promise.race([ fetch(API + '/api/health'), timeoutPromise ]);
             if (response.ok) {
                 document.getElementById('status').textContent = 'Connected';
-                document.getElementById('status').style.color = '#00bceb';
+                document.getElementById('status').style.color = 'var(--brand)';
                 if (document.getElementById('files-list').innerHTML.includes('Connection lost') ||
                     document.getElementById('files-list').innerHTML.includes('Server responded with an error')) {
                     loadProcessedFiles();
@@ -1300,18 +1301,18 @@ function New-FrontendFiles {
                 return true;
             } else {
                 document.getElementById('status').textContent = 'Server Error';
-                document.getElementById('status').style.color = '#ef4444';
+                document.getElementById('status').style.color = 'var(--err)';
                 return false;
             }
         } catch (error) {
             if (retries > 0) {
                 document.getElementById('status').textContent = 'Connecting...';
-                document.getElementById('status').style.color = '#fbbf24';
+                document.getElementById('status').style.color = 'var(--warn)';
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 return checkHealth(retries - 1);
             } else {
                 document.getElementById('status').textContent = 'Disconnected';
-                document.getElementById('status').style.color = '#ef4444';
+                document.getElementById('status').style.color = 'var(--err)';
                 return false;
             }
         }

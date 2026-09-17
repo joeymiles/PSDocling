@@ -53,7 +53,10 @@ try {
     $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File')
 
     $apiPath = Join-Path $runDir 'docling_api.ps1'
-    $childTemplate.Replace('__COMMAND__', "Start-APIServer -Port $apiPort").Replace('__COMPONENT__', 'api') |
+    # With a window, the API stops everything once the UI has gone quiet
+    # (window closed without Quit). Headless/CLI use keeps running.
+    $idle = if ($UseWebView) { 180 } else { 0 }
+    $childTemplate.Replace('__COMMAND__', "Start-APIServer -Port $apiPort -IdleShutdownSeconds $idle").Replace('__COMPONENT__', 'api') |
         Set-Content $apiPath -Encoding UTF8
     $apiProcess = Start-Process powershell -ArgumentList ($childArgs + "`"$apiPath`"") -PassThru -WindowStyle Hidden
     Write-Host "API server started on port $apiPort" -ForegroundColor Green

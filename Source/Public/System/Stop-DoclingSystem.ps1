@@ -18,50 +18,56 @@
 function Stop-DoclingSystem {
     [CmdletBinding()]
     param(
-        [switch]$ClearQueue
+        [switch]$ClearQueue,
+        # Used by the API server when it handles Quit, so it can finish its own shutdown
+        [int]$ExcludeProcessId = 0
     )
 
     Write-Host "Stopping Docling System processes..." -ForegroundColor Cyan
 
-    # Stop PowerShell processes running Docling components
     $doclingProcesses = @()
+    $seenIds = @{}
+    function Add-Target([int]$Id) {
+        if (-not $Id -or $Id -eq $ExcludeProcessId -or $Id -eq $PID -or $seenIds.ContainsKey($Id)) { return }
+        $proc = Get-Process -Id $Id -ErrorAction SilentlyContinue
+        if ($proc) {
+            $seenIds[$Id] = $true
+            $script:doclingTargets += $proc
+        }
+    }
+    $script:doclingTargets = @()
 
-    # Method 1: Check PIDs from stored file (most reliable)
+    # Method 1: PIDs recorded by Start-DoclingSystem for this home
     $runDir = Get-DoclingPath Run
     $pidFile = Join-Path $runDir "docling_pids.json"
     if (Test-Path $pidFile) {
         try {
-            $storedPids = Get-Content $pidFile | ConvertFrom-Json
-            foreach ($processId in @($storedPids.API, $storedPids.Processor, $storedPids.Web, $storedPids.PyWebView)) {
-                if ($processId) {
-                    $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
-                    if ($proc) {
-                        $doclingProcesses += $proc
-                    }
-                }
+            $storedPids = Get-Content $pidFile -Raw | ConvertFrom-Json
+            foreach ($processId in @($storedPids.API, $storedPids.Processor, $storedPids.PyWebView)) {
+                Add-Target $processId
             }
-            Write-Verbose "Found $($doclingProcesses.Count) processes from PID file"
         } catch {
             Write-Warning "Could not read PID file: $($_.Exception.Message)"
         }
     }
 
-    # Method 2: Use WMI to search by CommandLine (slower but finds orphaned processes)
-    $wmiProcesses = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='python.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue
+    # Method 2: command-line match for orphans. Scoped to this home's run
+    # folder so another PSDocling home (tests, second install) is untouched;
+    # the pre-#44 TEMP script names are matched too so old orphans get cleaned.
+    $legacyApi = Join-Path $env:TEMP 'docling_api.ps1'
+    $legacyProc = Join-Path $env:TEMP 'docling_processor.ps1'
+    $wmiProcesses = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe' OR Name='python.exe' OR Name='pythonw.exe' OR Name='msedge.exe' OR Name='chrome.exe'" -ErrorAction SilentlyContinue
     foreach ($wmiProc in $wmiProcesses) {
-        if ($wmiProc.CommandLine) {
-            $cmdLine = $wmiProc.CommandLine
-            if ($cmdLine -like "*docling_api.ps1*" -or
-                $cmdLine -like "*docling_processor.ps1*" -or
-                $cmdLine -like "*Start-WebServer.ps1*" -or
-                $cmdLine -like "*Launch-PyWebView.py*") {
-                $proc = Get-Process -Id $wmiProc.ProcessId -ErrorAction SilentlyContinue
-                if ($proc -and $proc -notin $doclingProcesses) {
-                    $doclingProcesses += $proc
-                }
-            }
+        $cmdLine = $wmiProc.CommandLine
+        if (-not $cmdLine) { continue }
+        $isOurs = $cmdLine.IndexOf($runDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                  $cmdLine.IndexOf($legacyApi, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                  $cmdLine.IndexOf($legacyProc, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        if ($isOurs) {
+            Add-Target ([int]$wmiProc.ProcessId)
         }
     }
+    $doclingProcesses = $script:doclingTargets
 
     if ($doclingProcesses) {
         Write-Host "Found $($doclingProcesses.Count) Docling processes to stop" -ForegroundColor Yellow

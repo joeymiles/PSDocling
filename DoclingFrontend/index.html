@@ -260,8 +260,9 @@
                         <p class="subtitle">PowerShell-based Document Processor for Docling</p>
                     </div>
                 </div>
-                <div class="row" aria-live="polite">
-                    <span class="status"><span class="status-dot" id="status-dot"></span>Backend Status: <span id="status">Connecting...</span></span>
+                <div class="row header-actions">
+                    <span class="status" aria-live="polite"><span class="status-dot" id="status-dot"></span>Backend Status: <span id="status">Connecting...</span></span>
+                    <button class="btn-ghost" id="quit-btn" type="button" onclick="quitApp()" title="Stop PSDocling and close the window">Quit</button>
                 </div>
             </div>
         </section>
@@ -431,6 +432,51 @@
         });
     }
 
+    // Quit: stop the API, processor and window. Warns when work is in flight.
+    async function quitApp() {
+        let busy = 0;
+        try {
+            const s = await (await fetch(API + '/api/status')).json();
+            busy = (s.QueuedCount || 0) + (s.ProcessingCount || 0);
+        } catch (e) { /* backend already gone: just close */ }
+        const body = busy > 0
+            ? busy + ' document(s) are queued or processing and will stop. Finished results are kept.'
+            : 'PSDocling will stop and this window will close.';
+        const ok = await showDialog({ title: 'Quit PSDocling?', body: body, okLabel: 'Quit', danger: busy > 0 });
+        if (!ok) { return; }
+
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
+            window.pywebview.api.quit();
+            return;
+        }
+        try {
+            await fetch(API + '/api/shutdown', { method: 'POST' });
+        } catch (e) { /* connection drops as the server stops */ }
+        showStoppedScreen();
+        window.close();
+    }
+
+    const pollTimers = [];
+
+    function showStoppedScreen() {
+        pollTimers.forEach(clearInterval);
+        document.body.innerHTML = '';
+        const wrap = document.createElement('main');
+        wrap.className = 'container';
+        wrap.style.cssText = 'display:flex;min-height:80vh;align-items:center;justify-content:center;text-align:center';
+        const card = document.createElement('section');
+        card.className = 'card';
+        const h = document.createElement('h1');
+        h.textContent = 'PSDocling has stopped';
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = 'You can close this window. Start PSDocling again from its shortcut.';
+        card.appendChild(h);
+        card.appendChild(p);
+        wrap.appendChild(card);
+        document.body.appendChild(wrap);
+    }
+
     // The API serves this page, so it is always same origin.
     const API = window.location.origin;
     const API_TOKEN = (document.querySelector('meta[name="psdocling-token"]') || {}).content || '';
@@ -467,8 +513,8 @@
             }
         }, 600);
 
-        setInterval(loadProcessedFiles, 2000);
-        setInterval(updateStats, 2000);
+        pollTimers.push(setInterval(loadProcessedFiles, 2000));
+        pollTimers.push(setInterval(updateStats, 2000));
     });
 
     function setupUpload() {

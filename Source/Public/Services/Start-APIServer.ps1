@@ -8,7 +8,13 @@
 #>
 function Start-APIServer {
     [CmdletBinding()]
-    param([int]$Port = 8080)
+    param(
+        [int]$Port = 8080,
+        # When > 0, shut the whole system down after this many seconds with no
+        # requests. Used for app windows that give no close event (the UI
+        # polls every 2 s while open).
+        [int]$IdleShutdownSeconds = 0
+    )
 
     # A "localhost" prefix makes http.sys accept loopback connections only.
     $listener = New-Object System.Net.HttpListener
@@ -50,9 +56,22 @@ function Start-APIServer {
         Write-Host "API Server started on port $Port" -ForegroundColor Green
         Write-DoclingLog -Component api -Message "API listening on http://localhost:$Port (pid $PID, frontend: $frontendDir)"
 
+        $shutdownReason = $null
+        $lastRequest = Get-Date
         while ($listener.IsListening) {
+            # Set by /api/shutdown on the previous request, after its response was sent
+            if ($shutdownReason) { break }
             try {
-                $context = $listener.GetContext()
+                $pending = $listener.GetContextAsync()
+                while (-not $pending.Wait(1000)) {
+                    if ($IdleShutdownSeconds -gt 0 -and ((Get-Date) - $lastRequest).TotalSeconds -ge $IdleShutdownSeconds) {
+                        $shutdownReason = "idle for $IdleShutdownSeconds s (window closed)"
+                        break
+                    }
+                }
+                if ($shutdownReason) { break }
+                $context = $pending.Result
+                $lastRequest = Get-Date
                 $request = $context.Request
                 $response = $context.Response
 
@@ -97,6 +116,12 @@ function Start-APIServer {
                 $responseContent = ""
 
                 switch -Regex ($path) {
+                    '^/api/shutdown$' {
+                        # Quit: answer first, then stop everything once the loop resumes
+                        $shutdownReason = 'Quit requested from the app'
+                        $responseContent = @{ success = $true; message = 'PSDocling is shutting down' } | ConvertTo-Json
+                    }
+
                     '^/api/health$' {
                         $responseContent = @{
                             status      = 'healthy'
@@ -972,5 +997,16 @@ function Start-APIServer {
     }
     finally {
         $listener.Stop()
+        $listener.Close()
+        if ($shutdownReason) {
+            Write-DoclingLog -Component api -Message "Shutting down: $shutdownReason"
+            try {
+                Stop-DoclingSystem -ExcludeProcessId $PID *> $null
+            } catch {
+                Write-DoclingLog -Component api -Level ERROR -Message "Shutdown cleanup failed: $($_.Exception.Message)"
+            }
+            Remove-Item (Join-Path (Get-DoclingPath Run) 'token.txt') -Force -ErrorAction SilentlyContinue
+            Write-DoclingLog -Component api -Message "API stopped"
+        }
     }
 }

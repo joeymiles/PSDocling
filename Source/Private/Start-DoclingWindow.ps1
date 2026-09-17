@@ -37,7 +37,9 @@ function Start-DoclingWindow {
         }
     }
 
-    $proc = Start-Process $pythonw -ArgumentList "`"$script`"", $ApiPort -PassThru
+    $runDir = Get-DoclingPath Run -Ensure
+    $icon = Join-Path (Get-DoclingFrontendPath) 'psdocling.ico'
+    $proc = Start-Process $pythonw -ArgumentList "`"$script`"", $ApiPort, "`"$runDir`"", "`"$icon`"" -PassThru
     Write-DoclingLog -Component launcher -Message "pywebview window started (pid $($proc.Id))"
     Write-Host "PSDocling window launched" -ForegroundColor Green
     return $proc

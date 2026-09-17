@@ -149,8 +149,10 @@ function Copy-PSDoclingInstall {
     }
 
     foreach ($file in @('README.md', 'LICENSE', 'requirements-webview.txt')) {
-        $sourcePath = Join-Path $RepoRoot $file
-        if (Test-Path $sourcePath) {
+        # README/LICENSE sit at the repo root, one level above app/
+        $sourcePath = @((Join-Path $RepoRoot $file), (Join-Path (Split-Path $RepoRoot -Parent) $file)) |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($sourcePath) {
             Copy-Item $sourcePath (Join-Path $DestDir $file) -Force
             Write-Info "Copied: $file -> $DestDir"
         }

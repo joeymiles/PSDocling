@@ -2,6 +2,14 @@
 .claude/
 CLAUDE.md
 
+# Build output (produced by app/scripts/Build-PSDoclingModule.ps1)
+Build/
+
+# Runtime data never belongs in git (default home is %LOCALAPPDATA%\PSDocling)
+data/
+logs/
+run/
+
 # Processed documents (test outputs)
 ProcessedDocuments/
 

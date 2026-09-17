@@ -1,81 +1,75 @@
 # PSDocling
 
-PowerShell module that wraps Python [Docling](https://docling-project.github.io/docling/) for document conversion. Convert PDFs, Office files, HTML, Markdown, CSV, and images to Markdown, HTML, JSON, plain text, or DocTags, with an optional REST API and web UI.
+PowerShell module that wraps Python [Docling](https://docling-project.github.io/docling/) for document conversion. Convert PDFs, Office files, HTML, Markdown, CSV, and images to Markdown, HTML, JSON, plain text, or DocTags. Runs as a local desktop app with its own window, and also exposes a local REST API.
 
 **Version:** 3.3.2 - **License:** MIT
 
 ## Demo
 
-![PSDocling web UI — upload queue and Ready demo documents with export and enrichment options](docs/readme/demo.png)
+![PSDocling web UI — upload queue and Ready demo documents with export and enrichment options](app/docs/readme/demo.png)
 
 ## Requirements
 
-- PowerShell 5.1+ or PowerShell Core 6+
-- Python 3.8+ with the `docling` package (optional; simulation mode available without Python)
-- .NET Framework 4.7.2+ when using Windows PowerShell
-- Optional native window: `pip install -r requirements-webview.txt` (PyWebView)
+- Windows with PowerShell 5.1+ (PowerShell 7 also works)
+- Python 3.8+ with the `docling` package (installed on first start if missing; simulation mode without Python)
+- Native window: `pip install -r app/requirements-webview.txt` (pywebview). Without it PSDocling opens in an Edge or Chrome app window.
 
 ## Install
-
-After clone, run the installer once. It **builds from `Source/` then installs** — no separate Build step.
 
 ```powershell
 git clone https://github.com/joeymiles/PSDocling.git
 cd PSDocling
-
-.\scripts\Install-DoclingModule.ps1
+.\app\scripts\Install-DoclingModule.ps1
 ```
 
-Force reinstall:
+The installer builds the module, installs it for the current user and offers a desktop shortcut. Reinstall with `-Force`; skip the question with `-DesktopShortcut` or `-NoDesktopShortcut`.
 
-```powershell
-.\scripts\Install-DoclingModule.ps1 -Force
-```
+## Start and quit
 
-## Quick start
+- **Desktop shortcut** (or double-click `PSDocling.cmd` in a checkout). PSDocling starts without a console window and opens in its own window. On first run it offers to add the shortcut if you do not have one.
+- **Quit** in the app header stops the API, the processor and the window. Closing the window does the same.
+- If PSDocling cannot start (for example the port is taken), a message box explains why and the reason is saved to `logs\last-launch-error.txt`.
+
+From PowerShell:
 
 ```powershell
 Import-Module PSDocling
-Initialize-DoclingSystem -GenerateFrontend
-Start-DoclingSystem -OpenBrowser
-
-# When finished
+Initialize-DoclingSystem
+Start-DoclingSystem -UseWebView      # own window; -OpenBrowser for a browser tab, neither for headless
 Stop-DoclingSystem
 ```
 
-Thin wrappers (same thing from the repo):
+## Where things live
+
+| What | Default |
+|------|---------|
+| App and API | `http://localhost:8080` (loopback only; change with `-Port`) |
+| Data folder | `%LOCALAPPDATA%\PSDocling` (override with `PSDOCLING_HOME`) |
+| Queue, history, uploads, converted output | `data\` in the data folder |
+| Logs (size capped) | `logs\` in the data folder |
+| Per-run token, process ids | `run\` in the data folder |
+
+## Security defaults
+
+- The API listens on `localhost` only and serves the UI from the same origin; there is no cross-origin access.
+- Every request that changes something (upload, convert, cancel, quit, uninstall) needs the per-run token. The app sends it automatically; scripts can read it from `run\token.txt` and send it as the `X-PSDocling-Token` header.
+- Requests with a non-loopback `Host` header are rejected.
 
 ```powershell
-.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
-.\scripts\Stop-All.ps1
+$token = Get-Content "$env:LOCALAPPDATA\PSDocling\run\token.txt"
+Invoke-RestMethod http://localhost:8080/api/status
+Invoke-RestMethod http://localhost:8080/api/cancel/<id> -Method POST -Headers @{ 'X-PSDocling-Token' = $token }
 ```
 
-## Ports and paths
+## Uninstall
 
-| Component | Default |
-|-----------|---------|
-| API server | `http://localhost:8080` |
-| Web frontend | `http://localhost:8081` |
-| Queue folder | `$env:TEMP\DoclingQueue` |
-| Status file | `$env:TEMP\docling_status.json` |
-| Working temp | `$env:TEMP\DoclingProcessor` |
-| Output | `$env:TEMP\DoclingOutput` |
-
-Custom ports via wrapper:
+Use **Settings > Uninstall PSDocling** in the app, or run:
 
 ```powershell
-.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081 -GenerateFrontend -OpenBrowser
+& "$([Environment]::GetFolderPath('MyDocuments'))\PowerShell\Modules\PSDocling\Uninstall-PSDocling.ps1"
 ```
 
-Simulation mode (no Python/Docling):
-
-```powershell
-.\scripts\Start-All.ps1 -SkipPythonCheck -GenerateFrontend -OpenBrowser
-```
-
-## Architecture
-
-Three cooperating processes: an HTTP API server, a background document processor that runs Docling, and a static web frontend. Work items move through a folder-based queue with shared status files under `$env:TEMP`.
+Uninstall stops PSDocling and removes the module and its desktop shortcut. After a warning it **deletes the data folder**, including converted documents, so download what you want to keep first. Removing the Python packages PSDocling installed (docling, tokenizers, pywebview) is optional and off by default; Python itself is never removed. A repo checkout is not deleted.
 
 ## Features
 
@@ -83,16 +77,20 @@ Three cooperating processes: an HTTP API server, a background document processor
 - Output: Markdown, HTML, JSON, plain text, DocTags (XML)
 - Queue-based processing with status tracking
 - REST API for programmatic upload/status/download
-- Web UI with drag-and-drop upload
+- Drag-and-drop UI with in-app dialogs and notifications
 - Optional enrichments (code, formulas, picture classification/description)
 - Optional hybrid chunking for RAG workflows
 
+## Architecture
+
+Two hidden PowerShell processes: the API server (which also serves the UI) and a background document processor that runs Docling. Work items move through a folder-based queue with status files in the data folder. The window is pywebview (or an Edge/Chrome app window).
+
 ## Documentation
 
-- [Overview](Help_files/00_Overview.md)
-- [Backend services](Help_files/01_Backend_Services.md)
-- [Frontend services](Help_files/02_Frontend_Services.md)
-- [File processing](Help_files/03_File_Processing.md)
+- [Overview](app/Help_files/00_Overview.md)
+- [Backend services](app/Help_files/01_Backend_Services.md)
+- [Frontend services](app/Help_files/02_Frontend_Services.md)
+- [File processing](app/Help_files/03_File_Processing.md)
 
 ```powershell
 Get-Help Start-DoclingSystem -Full
@@ -103,29 +101,32 @@ Get-Help Add-DocumentToQueue -Examples
 
 ```
 PSDocling/
-  Source/           # Module source (authoritative)
-  Build/            # Built .psm1/.psd1 (produced by install/build)
-  DoclingFrontend/  # Static web UI + Start-WebServer.ps1
-  scripts/          # Install, Build, Start/Stop wrappers, PyWebView launcher
-  Tests/            # Audit + E2E smoke tests
-  Help_files/       # User guides
-  PSDocling.psd1    # Manifest (copied into Build/ on build)
+  PSDocling.cmd        # Start from a checkout (hidden console, own window)
+  README.md, LICENSE
+  app/
+    Source/            # Module source (authoritative)
+    DoclingFrontend/   # Web UI and psdocling.ico (served by the API)
+    scripts/           # Install, Uninstall, Start-PSDocling launcher, dev Start-All/Stop-All, icon generator
+    Tests/             # Audit, E2E, lifecycle, launcher and uninstall tests
+    Help_files/        # User guides
+    docs/              # README images
+    PSDocling.psd1     # Manifest
+    Build/             # Built module (generated, not in git)
 ```
 
 ## Development
 
 ```powershell
-.\scripts\Build-PSDoclingModule.ps1
-.\Tests\Test-AuditFixes.ps1
+.\app\scripts\Start-All.ps1 -OpenBrowser      # build this checkout and run it with a console
+.\app\scripts\Stop-All.ps1
+.\app\Tests\Test-AuditFixes.ps1               # static and queue checks
+.\app\Tests\Test-Lifecycle.ps1 -WithWindow    # Quit, window close, idle shutdown
+.\app\Tests\Test-Launcher.ps1                 # launcher, shortcut, port conflict
+.\app\Tests\Test-Uninstall.ps1                # install and uninstall, fully redirected
+.\app\Tests\Test-E2EUploadProcess.ps1         # needs a running app on 8080 and Docling
 ```
 
-The installer always rebuilds from `Source/` unless you pass `-SkipBuild`. Developers can iterate with Build alone and `Import-Module .\Build\PSDocling.psm1 -Force`.
-
-## Uninstall
-
-```powershell
-.\scripts\Uninstall-DoclingModule.ps1
-```
+`Start-All.ps1` always uses this checkout's build, never an installed copy.
 
 ## License
 

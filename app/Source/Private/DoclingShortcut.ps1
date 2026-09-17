@@ -37,6 +37,8 @@ function New-DoclingShortcut {
     $launcher = Get-DoclingLauncherPath
     if (-not $launcher) { throw "Start-PSDocling.ps1 not found next to the module" }
     $shortcutPath = Get-DoclingShortcutPath
+    $shortcutDir = Split-Path $shortcutPath -Parent
+    if (-not (Test-Path $shortcutDir)) { New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null }
     $shell = New-Object -ComObject WScript.Shell
     $lnk = $shell.CreateShortcut($shortcutPath)
     $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

@@ -155,6 +155,36 @@ function Start-APIServer {
                         }
                     }
 
+                    '^/api/uninstall$' {
+                        # The UI has already warned and confirmed. Run the uninstaller
+                        # from a TEMP copy (the module folder is being deleted), let it
+                        # wait for this process, then shut down.
+                        $moduleDir = Split-Path $script:DoclingSystem.ModulePath -Parent
+                        $uninstaller = @(
+                            (Join-Path $moduleDir 'Uninstall-PSDocling.ps1'),
+                            (Join-Path (Split-Path $moduleDir -Parent) 'scripts\Uninstall-PSDocling.ps1')
+                        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                        if (-not $uninstaller) {
+                            $response.StatusCode = 500
+                            $responseContent = @{ success = $false; error = 'Uninstall-PSDocling.ps1 not found' } | ConvertTo-Json
+                        } else {
+                            $reader = New-Object System.IO.StreamReader($request.InputStream, $request.ContentEncoding)
+                            $body = $reader.ReadToEnd()
+                            $reader.Close()
+                            $options = if ($body) { try { $body | ConvertFrom-Json } catch { $null } } else { $null }
+                            $copy = Join-Path $env:TEMP ("PSDocling-uninstall-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+                            Copy-Item $uninstaller $copy -Force
+                            $uninstallArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$copy`"", '-Force', '-WaitForProcessId', $PID)
+                            if ($options -and $options.removeDoclingPackages) { $uninstallArgs += '-RemoveDoclingPackages' }
+                            if ($options -and $options.removeTokenizers) { $uninstallArgs += '-RemoveTokenizers' }
+                            if ($options -and $options.removePyWebView) { $uninstallArgs += '-RemovePyWebView' }
+                            Start-Process powershell -ArgumentList $uninstallArgs -WindowStyle Hidden | Out-Null
+                            Write-DoclingLog -Component api -Message "Uninstall started from the app (options: $body)"
+                            $shutdownReason = 'Uninstall requested from the app'
+                            $responseContent = @{ success = $true; log = (Join-Path $env:TEMP 'PSDocling-uninstall.log') } | ConvertTo-Json
+                        }
+                    }
+
                     '^/api/health$' {
                         $responseContent = @{
                             status      = 'healthy'

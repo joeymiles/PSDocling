@@ -12,18 +12,24 @@
     Force installation even if module already exists
 .PARAMETER SkipBuild
     Skip the build step and install existing Build/ output only
+.PARAMETER DesktopShortcut
+    Create the desktop shortcut without asking
+.PARAMETER NoDesktopShortcut
+    Do not create or offer the desktop shortcut
 .EXAMPLE
-    .\scripts\Install-DoclingModule.ps1
+    .\app\scripts\Install-DoclingModule.ps1
 .EXAMPLE
-    .\scripts\Install-DoclingModule.ps1 -Scope AllUsers
-.EXAMPLE
-    .\scripts\Install-DoclingModule.ps1 -Force
+    .\app\scripts\Install-DoclingModule.ps1 -Force -DesktopShortcut
 #>
 param(
     [ValidateSet('CurrentUser', 'AllUsers')]
     [string]$Scope = 'CurrentUser',
     [switch]$Force,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$DesktopShortcut,
+    [switch]$NoDesktopShortcut,
+    # Tests only: install into this folder instead of the PowerShell module paths
+    [string]$Destination
 )
 
 function Write-Info($msg)  { Write-Host $msg -ForegroundColor Cyan }
@@ -102,6 +108,7 @@ if ($Scope -eq 'AllUsers') {
 }
 
 $destDirs = @($destBases | ForEach-Object { Join-Path $_ $moduleName } | Select-Object -Unique)
+if ($Destination) { $destDirs = @((Join-Path $Destination $moduleName)) }
 
 Write-Info "Installing PSDocling module..."
 Write-Info "Source (repo): $RepoRoot"
@@ -142,10 +149,13 @@ function Copy-PSDoclingInstall {
         Write-Info "Copied: DoclingFrontend/ -> $DestDir"
     }
 
-    $pyWebViewSrc = Join-Path $PSScriptRoot 'Launch-PyWebView.py'
-    if (Test-Path $pyWebViewSrc) {
-        Copy-Item $pyWebViewSrc (Join-Path $DestDir 'Launch-PyWebView.py') -Force
-        Write-Info "Copied: Launch-PyWebView.py -> $DestDir"
+    # Window launcher, desktop launcher, uninstaller and stop helper run from the module folder
+    foreach ($script in @('Launch-PyWebView.py', 'Start-PSDocling.ps1', 'Uninstall-PSDocling.ps1', 'Stop-All.ps1')) {
+        $scriptSrc = Join-Path $PSScriptRoot $script
+        if (Test-Path $scriptSrc) {
+            Copy-Item $scriptSrc (Join-Path $DestDir $script) -Force
+            Write-Info "Copied: $script -> $DestDir"
+        }
     }
 
     foreach ($file in @('README.md', 'LICENSE', 'requirements-webview.txt')) {
@@ -157,12 +167,6 @@ function Copy-PSDoclingInstall {
             Write-Info "Copied: $file -> $DestDir"
         }
     }
-
-    $stopAll = @"
-Import-Module `$PSScriptRoot -Force
-Stop-DoclingSystem -ClearQueue
-"@
-    Set-Content -Path (Join-Path $DestDir 'Stop-All.ps1') -Value $stopAll -Encoding UTF8
 }
 
 foreach ($destDir in $destDirs) {
@@ -178,16 +182,6 @@ try {
         Write-Ok "Module installed successfully!"
         Write-Ok "Version: $($moduleInfo.Version)"
         Write-Ok "Functions exported: $($moduleInfo.ExportedFunctions.Count)"
-        Write-Info ""
-        Write-Info "Usage:"
-        Write-Info "  Import-Module PSDocling"
-        Write-Info "  Initialize-DoclingSystem -GenerateFrontend"
-        Write-Info "  Start-DoclingSystem -OpenBrowser"
-        Write-Info "  Stop-DoclingSystem"
-        Write-Info ""
-        Write-Info "Or from the repo:"
-        Write-Info "  .\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser"
-        Write-Info "  .\scripts\Stop-All.ps1"
     } else {
         Write-Err "Module import failed"
         exit 1
@@ -197,4 +191,34 @@ try {
     exit 1
 }
 
+# Offer the desktop shortcut (the app also offers it once on first run)
+$module = Get-Module PSDocling
+$wantShortcut = $false
+$decided = $true
+if ($DesktopShortcut) {
+    $wantShortcut = $true
+} elseif ($NoDesktopShortcut) {
+    $wantShortcut = $false
+} elseif ([Environment]::UserInteractive) {
+    $wantShortcut = (Read-Host "Add a PSDocling shortcut to your desktop? (Y/n)") -notmatch '^(n|no)$'
+} else {
+    $decided = $false   # unattended: leave the offer to the app's first run
+}
+if ($module -and $decided) {
+    try {
+        & $module {
+            param($Create)
+            Set-DoclingSetting -Name 'ShortcutOffered' -Value $true
+            if ($Create) { New-DoclingShortcut }
+        } $wantShortcut | ForEach-Object { Write-Ok "Desktop shortcut: $_" }
+    } catch {
+        Write-Warn "Could not create the desktop shortcut: $($_.Exception.Message)"
+    }
+}
+
 Write-Ok "Installation complete!"
+Write-Info ""
+Write-Info "Start PSDocling from the desktop shortcut, or run:"
+Write-Info "  & '$(Join-Path $primaryDest 'Start-PSDocling.ps1')'"
+Write-Info "Uninstall (warns, then deletes data) from Settings in the app, or run:"
+Write-Info "  & '$(Join-Path $primaryDest 'Uninstall-PSDocling.ps1')'"

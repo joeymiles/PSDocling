@@ -262,6 +262,7 @@
                 </div>
                 <div class="row header-actions">
                     <span class="status" aria-live="polite"><span class="status-dot" id="status-dot"></span>Backend Status: <span id="status">Connecting...</span></span>
+                    <button class="btn-ghost" id="settings-btn" type="button" onclick="openSettings()" title="Shortcut, data folder and uninstall">Settings</button>
                     <button class="btn-ghost" id="quit-btn" type="button" onclick="quitApp()" title="Stop PSDocling and close the window">Quit</button>
                 </div>
             </div>
@@ -456,9 +457,105 @@
         window.close();
     }
 
+    // Settings: data folder, desktop shortcut, uninstall.
+    async function openSettings() {
+        let info = {};
+        try { info = await (await fetch(API + '/api/app-info')).json(); } catch (e) { /* show what we can */ }
+        let action = null;
+        const body = document.createElement('div');
+
+        const folder = document.createElement('p');
+        folder.textContent = 'Data folder: ' + (info.dataFolder || 'unknown');
+        folder.className = 'muted';
+        folder.style.wordBreak = 'break-all';
+        body.appendChild(folder);
+
+        function addAction(label, name, danger, hint) {
+            const row = document.createElement('div');
+            row.style.margin = '12px 0';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = danger ? 'btn-ghost btn-danger' : 'btn-ghost';
+            btn.textContent = label;
+            btn.onclick = function() { action = name; document.getElementById('app-dialog-ok').click(); };
+            row.appendChild(btn);
+            if (hint) {
+                const p = document.createElement('p');
+                p.className = 'muted';
+                p.style.margin = '6px 0 0 0';
+                p.textContent = hint;
+                row.appendChild(p);
+            }
+            body.appendChild(row);
+        }
+        if (info.launcherAvailable && !info.shortcutExists) {
+            addAction('Add desktop shortcut', 'shortcut', false, null);
+        } else if (info.shortcutExists) {
+            const p = document.createElement('p');
+            p.textContent = 'Desktop shortcut: installed';
+            body.appendChild(p);
+        }
+        addAction('Uninstall PSDocling...', 'uninstall', true, 'Removes the app and deletes its data. You will be asked to confirm.');
+
+        await showDialog({ title: 'Settings', body: body, okLabel: 'Close', showCancel: false });
+        if (action === 'shortcut') { await createShortcut(true); }
+        if (action === 'uninstall') { await uninstallApp(info); }
+    }
+
+    async function uninstallApp(info) {
+        const body = document.createElement('div');
+        const warn = document.createElement('p');
+        warn.textContent = 'This removes PSDocling and permanently deletes its data: the queue, history, uploaded files, converted documents, logs and settings in ' +
+            ((info && info.dataFolder) || 'the PSDocling data folder') + '. Download anything you want to keep first.';
+        body.appendChild(warn);
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.textContent = 'Optional: also remove Python packages PSDocling installed. Python itself is never removed.';
+        body.appendChild(note);
+        const boxes = {};
+        [['removeDoclingPackages', 'Docling packages (docling, docling-core)'],
+         ['removeTokenizers', 'Tokenizers (transformers, tiktoken) - other tools may use these'],
+         ['removePyWebView', 'Window support (pywebview)']].forEach(function(item) {
+            const label = document.createElement('label');
+            label.className = 'dialog-option';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = false;
+            const text = document.createElement('span');
+            text.textContent = item[1];
+            label.appendChild(box);
+            label.appendChild(text);
+            body.appendChild(label);
+            boxes[item[0]] = box;
+        });
+
+        const ok = await showDialog({ title: 'Uninstall PSDocling?', body: body, okLabel: 'Uninstall and delete data', cancelLabel: 'Keep PSDocling', danger: true });
+        if (!ok) { return; }
+
+        const options = {};
+        Object.keys(boxes).forEach(function(k) { options[k] = boxes[k].checked; });
+        try {
+            const r = await fetch(API + '/api/uninstall', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(options)
+            });
+            const data = await r.json();
+            if (!data.success) { showToast(data.error || 'Uninstall could not start.', 'error'); return; }
+        } catch (e) {
+            showToast('Uninstall could not start: ' + e.message, 'error');
+            return;
+        }
+        showStoppedScreen('PSDocling is being uninstalled', 'Its data is being deleted. This window will close.');
+        setTimeout(function() {
+            if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) { window.pywebview.api.quit(); }
+            else { window.close(); }
+        }, 1500);
+    }
+
     const pollTimers = [];
 
-    function showStoppedScreen() {
+    function showStoppedScreen(title, detail) {
         pollTimers.forEach(clearInterval);
         document.body.innerHTML = '';
         const wrap = document.createElement('main');
@@ -467,10 +564,10 @@
         const card = document.createElement('section');
         card.className = 'card';
         const h = document.createElement('h1');
-        h.textContent = 'PSDocling has stopped';
+        h.textContent = title || 'PSDocling has stopped';
         const p = document.createElement('p');
         p.className = 'muted';
-        p.textContent = 'You can close this window. Start PSDocling again from its shortcut.';
+        p.textContent = detail || 'You can close this window. Start PSDocling again from its shortcut.';
         card.appendChild(h);
         card.appendChild(p);
         wrap.appendChild(card);

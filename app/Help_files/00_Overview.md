@@ -29,23 +29,20 @@ Welcome to the PSDocling help documentation! These guides will help you understa
 
 ### First Time Setup
 
-1. **Install the Module** (builds from Source automatically)
+1. **Install** (builds from source automatically and offers a desktop shortcut)
    ```powershell
-   .\scripts\Install-DoclingModule.ps1
+   .\app\scripts\Install-DoclingModule.ps1
    ```
 
-2. **Start the system**
+2. **Start PSDocling** from the desktop shortcut (or `PSDocling.cmd` in a checkout). It opens in its own window with no console. From PowerShell:
    ```powershell
    Import-Module PSDocling
-   Initialize-DoclingSystem -GenerateFrontend
-   Start-DoclingSystem -OpenBrowser
+   Initialize-DoclingSystem
+   Start-DoclingSystem -UseWebView
    ```
 
-   Or: `.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser`
-
 3. **Process Your First Document**
-   - Open browser to http://localhost:8081
-   - Drag and drop a PDF file
+   - Drag and drop a PDF file into the window
    - Click "Process Documents"
    - Download the converted file
 
@@ -63,17 +60,19 @@ Welcome to the PSDocling help documentation! These guides will help you understa
 ## System Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Web Interface  │────▶│   API Server    │────▶│    Document     │
-│  (Port 8081)    │     │  (Port 8080)    │     │   Processor     │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │                         │
-                               ▼                         ▼
-                        ┌─────────────┐          ┌─────────────┐
-                        │ Queue File  │          │ Status File │
-                        │   (JSON)    │          │   (JSON)    │
-                        └─────────────┘          └─────────────┘
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│  App window     │────▶│  API server + UI     │────▶│    Document     │
+│  (pywebview)    │     │  localhost:8080 only │     │   Processor     │
+└─────────────────┘     └──────────────────────┘     └─────────────────┘
+                               │                           │
+                               ▼                           ▼
+                        ┌──────────────────────────────────────────┐
+                        │ %LOCALAPPDATA%\PSDocling\data            │
+                        │ queue folder, status.json, uploads, output│
+                        └──────────────────────────────────────────┘
 ```
+
+The API server and processor run as hidden PowerShell processes. Quit (or closing the window) stops all of them.
 
 ## Key Features
 
@@ -95,13 +94,6 @@ Get-ChildItem "C:\MyDocuments" -Filter "*.pdf" | ForEach-Object {
 }
 ```
 
-### Team Document Processing Server
-```powershell
-# Set up shared server for team
-.\scripts\Start-All.ps1 -ApiPort 80 -WebPort 80 -EnsureUrlAcl
-Write-Host "Share this URL with your team: http://$(hostname)"
-```
-
 ### Automated Document Pipeline
 ```powershell
 # Watch folder for new documents
@@ -118,25 +110,29 @@ Register-ObjectEvent -InputObject $watcher -EventName "Created" -Action {
 
 ## Default Ports and Paths
 
-| Component | Default Value | Environment Variable |
-|-----------|--------------|---------------------|
-| API Server | http://localhost:8080 | - |
-| Web Interface | http://localhost:8081 | - |
-| Queue File | %TEMP%\docling_queue.json | $env:TEMP |
-| Status File | %TEMP%\docling_status.json | $env:TEMP |
-| Temp Processing | %TEMP%\DoclingProcessor | $env:TEMP |
-| Output Directory | .\ProcessedDocuments | Current directory |
+| Component | Default Value | Override |
+|-----------|--------------|----------|
+| API server and UI | http://localhost:8080 (loopback only) | `-Port` |
+| Data folder | %LOCALAPPDATA%\PSDocling | `PSDOCLING_HOME` |
+| Queue folder | data\queue | |
+| Status file | data\status.json | |
+| Uploads | data\uploads | |
+| Converted output | data\output | |
+| Logs (capped) | logs\ | |
+| Write token, process ids | run\ | |
 
 ## Quick Troubleshooting
 
 ### Service Won't Start
 ```powershell
-# Check if ports are in use
-netstat -ano | findstr :8080
-netstat -ano | findstr :8081
+# Why the last start failed
+Get-Content "$env:LOCALAPPDATA\PSDocling\logs\last-launch-error.txt"
 
-# Use different ports
-.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081
+# Check if the port is in use
+netstat -ano | findstr :8080
+
+# Use a different port
+Start-DoclingSystem -Port 9080 -UseWebView
 ```
 
 ### Documents Not Processing
@@ -145,17 +141,18 @@ netstat -ano | findstr :8081
 Get-PythonStatus
 
 # Run in simulation mode (no Python needed)
-.\scripts\Start-All.ps1 -SkipPythonCheck
+Initialize-DoclingSystem -SkipPythonCheck
+Start-DoclingSystem -UseWebView
 ```
 
-### Can't Access Web Interface
+### Window Shows Nothing
 ```powershell
-# Regenerate frontend files
-New-FrontendFiles
+# Restart everything
+Stop-DoclingSystem
+Start-DoclingSystem -UseWebView
 
-# Restart all services
-.\scripts\Stop-All.ps1
-.\scripts\Start-All.ps1 -GenerateFrontend -OpenBrowser
+# If the UI files are missing, reinstall
+.\app\scripts\Install-DoclingModule.ps1 -Force
 ```
 
 ## Getting Help
@@ -176,8 +173,9 @@ Get-DoclingSystemStatus | Format-List *
 
 ### Debug Information
 ```powershell
-# View error logs
-Get-Content "$env:TEMP\docling_error.txt" -Tail 50
+# View logs (api.log, processor.log, processor-errors.log, launcher.log, window.log)
+Get-ChildItem "$env:LOCALAPPDATA\PSDocling\logs"
+Get-Content "$env:LOCALAPPDATA\PSDocling\logs\processor-errors.log" -Tail 50
 
 # Check queue status
 Get-QueueItems | Format-Table -AutoSize

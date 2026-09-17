@@ -1,273 +1,169 @@
 # Backend Services Guide
 
 ## Overview
-The PSDocling backend services provide REST API endpoints and document processing capabilities. This guide covers starting and managing the backend services with both default and custom configurations.
+PSDocling runs two hidden PowerShell processes: the API server, which also serves the web UI, and the document processor. This guide covers starting, calling and stopping them.
 
 ## Table of Contents
 - [Starting Backend Services](#starting-backend-services)
 - [Default Configuration](#default-configuration)
-- [Custom Domain and Ports](#custom-domain-and-ports)
+- [Security Defaults](#security-defaults)
 - [API Endpoints](#api-endpoints)
 - [Health Monitoring](#health-monitoring)
 - [Stopping Services](#stopping-services)
+- [Troubleshooting](#troubleshooting)
 
 ## Starting Backend Services
 
 ### Prerequisites
 - PowerShell 5.1 or higher
 - Python 3.8+ with docling package (optional for simulation mode)
-- Administrator rights (for custom domains/ports)
+- No administrator rights are needed
 
-### Quick Start with Defaults
+### Quick Start
 
 ```powershell
-# Import the module and start services
 Import-Module PSDocling
 Initialize-DoclingSystem
-Start-DoclingSystem
+Start-DoclingSystem               # headless: API + processor only
+Start-DoclingSystem -UseWebView   # plus the app window (closing it stops everything)
 ```
 
-Or use the convenience script:
+For development from a checkout (uses the checkout's build, visible console):
 ```powershell
-.\scripts\Start-All.ps1
+.\app\scripts\Start-All.ps1 -OpenBrowser
 ```
 
 ## Default Configuration
 
-### Default Ports and Addresses
-- **API Server**: `http://localhost:8080`
-- **Document Processor**: Background service (no direct access)
-- **Status Files**: Located in `$env:TEMP`
-  - Queue Folder: `$env:TEMP\DoclingQueue` (folder-based queue system)
-  - Status: `$env:TEMP\docling_status.json`
+### Addresses and Paths
+- **API server and UI**: `http://localhost:8080` (loopback only)
+- **Document processor**: background process, no direct access
+- **Data folder**: `%LOCALAPPDATA%\PSDocling` (set `PSDOCLING_HOME` to move it)
+  - Queue folder: `data\queue` (one `.queue` file per job)
+  - Status: `data\status.json`
+  - Uploads: `data\uploads`, converted output: `data\output`
+  - Logs: `logs\` (api, processor, launcher, window; capped with one rotation)
+  - Runtime: `run\` (token, process ids, helper scripts)
+
+### Another Port
+
+```powershell
+Start-DoclingSystem -Port 9080 -UseWebView
+```
 
 ### Starting Individual Services
 
 ```powershell
-# Start only the API server
+# API server only (blocks the current session)
 Start-APIServer -Port 8080
 
-# Start only the document processor
+# Document processor only (blocks the current session)
 Start-DocumentProcessor
 
 # Check system status
 Get-DoclingSystemStatus
 ```
 
-### Example: Using Default Configuration
+## Security Defaults
+
+PSDocling is a local desktop app:
+
+- The API binds to `localhost` and rejects requests whose `Host` header is not `localhost` or `127.0.0.1`.
+- The UI is served by the API itself, so there is no cross-origin (CORS) access for other web pages.
+- Requests that change anything (POST) need the per-run token in the `X-PSDocling-Token` header. The token is created at each start and written to `run\token.txt`; it is removed on shutdown.
+- Serving PSDocling to other machines is not supported.
 
 ```powershell
-# 1. Start the backend services
-Import-Module PSDocling
-Initialize-DoclingSystem
-Start-DoclingSystem
-
-# 2. Verify services are running
-$status = Get-DoclingSystemStatus
-if ($status.Backend.APIHealthy) {
-    Write-Host "Backend API is running on port 8080" -ForegroundColor Green
-}
-
-# 3. Test the API
-$response = Invoke-RestMethod -Uri "http://localhost:8080/api/health"
-Write-Host "API Status: $($response.status)"
-```
-
-## Custom Domain and Ports
-
-### Configuration for Custom Ports
-
-```powershell
-# Method 1: Using Start-All.ps1 with custom ports
-.\scripts\Start-All.ps1 -ApiPort 9080 -WebPort 9081
-
-# Method 2: Using module functions
-Import-Module PSDocling
-$script:DoclingSystem.APIPort = 9080
-$script:DoclingSystem.WebPort = 9081
-Initialize-DoclingSystem
-Start-DoclingSystem
-```
-
-### Setting Up Custom Domain (Requires Admin)
-
-```powershell
-# 1. Run PowerShell as Administrator
-
-# 2. Add URL ACL for custom domain
-netsh http add urlacl url=http://myserver.local:9080/ user=Everyone
-
-# 3. Update configuration
-$config = Get-DoclingConfiguration
-$config.Server.APIHost = 'myserver.local'
-$config.Server.APIPort = 9080
-Set-DoclingConfiguration -Config $config
-
-# 4. Start services with URL ACL
-.\scripts\Start-All.ps1 -EnsureUrlAcl -ApiPort 9080
-```
-
-### Example: Production Setup
-
-```powershell
-# Production configuration example
-# Run as Administrator
-
-# 1. Set up custom domain and ports
-$customHost = "docling.company.com"
-$customPort = 8443
-
-# 2. Add URL ACL
-netsh http add urlacl url=http://${customHost}:${customPort}/ user=Everyone
-
-# 3. Configure firewall (if needed)
-New-NetFirewallRule -DisplayName "PSDocling API" `
-    -Direction Inbound `
-    -LocalPort $customPort `
-    -Protocol TCP `
-    -Action Allow
-
-# 4. Update configuration file
-@{
-    Server = @{
-        APIHost = $customHost
-        APIPort = $customPort
-        Protocol = 'http'
-        EnableCORS = 'true'
-        AllowedOrigins = @("http://${customHost}:8081", "https://app.company.com")
-    }
-} | Export-PowerShellDataFile -Path ".\PSDocling.config.psd1"
-
-# 5. Start services
-Import-Module PSDocling
-Initialize-DoclingSystem
-Start-DoclingSystem
+$token = Get-Content "$env:LOCALAPPDATA\PSDocling\run\token.txt"
+$auth = @{ 'X-PSDocling-Token' = $token }
 ```
 
 ## API Endpoints
 
-### Available Endpoints
+| Endpoint | Method | Token | Description |
+|----------|--------|-------|-------------|
+| `/` | GET | | Web UI |
+| `/api/health` | GET | | Health check |
+| `/api/status` | GET | | Queue counts |
+| `/api/documents` | GET | | All documents and their status |
+| `/api/files` | GET | | Processed files |
+| `/api/error/{id}` | GET | | Error details for a document |
+| `/api/result/{id}` | GET | | Converted result |
+| `/api/download/{id}` | GET | | Result folder as ZIP |
+| `/api/download-all` | GET | | All results as ZIP |
+| `/api/app-info` | GET | | Version, data folder, shortcut state |
+| `/api/upload` | POST | yes | Upload a document (base64 JSON) |
+| `/api/start-conversion` | POST | yes | Queue an uploaded document |
+| `/api/reprocess` | POST | yes | Convert again with new options |
+| `/api/cancel/{id}` | POST | yes | Cancel processing |
+| `/api/documents/{id}/reset` | POST | yes | Move a document back to results |
+| `/api/shortcut` | POST | yes | `{"create": true}` adds the desktop shortcut |
+| `/api/shutdown` | POST | yes | Stop the API, processor and window |
+| `/api/uninstall` | POST | yes | Uninstall and delete data (the app confirms first) |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Health check |
-| `/api/status` | GET | System status and queue info |
-| `/api/documents` | GET | List all documents |
-| `/api/upload` | POST | Upload document for processing |
-| `/api/files` | GET | List processed files |
-| `/api/download/{id}` | GET | Download processed file |
-
-### Testing API Endpoints
+### Calling the API
 
 ```powershell
-# Health check
-curl http://localhost:8080/api/health
+Invoke-RestMethod http://localhost:8080/api/health
 
-# System status
-$status = Invoke-RestMethod -Uri "http://localhost:8080/api/status"
-Write-Host "Queue Count: $($status.queueCount)"
-Write-Host "Processing: $($status.processingCount)"
+$status = Invoke-RestMethod http://localhost:8080/api/status
+"Queued: $($status.QueuedCount)  Processing: $($status.ProcessingCount)"
 
-# List documents
-$docs = Invoke-RestMethod -Uri "http://localhost:8080/api/documents"
-$docs | Format-Table FileName, Status, Progress -AutoSize
+$docs = Invoke-RestMethod http://localhost:8080/api/documents
+$docs | Format-Table fileName, status, progress -AutoSize
+
+# Upload and convert (needs the token)
+$token = Get-Content "$env:LOCALAPPDATA\PSDocling\run\token.txt"
+$auth = @{ 'X-PSDocling-Token' = $token }
+$body = @{ fileName = 'report.pdf'; dataBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\docs\report.pdf')) } | ConvertTo-Json
+$upload = Invoke-RestMethod http://localhost:8080/api/upload -Method POST -Headers $auth -ContentType 'application/json' -Body $body
+Invoke-RestMethod http://localhost:8080/api/start-conversion -Method POST -Headers $auth -ContentType 'application/json' -Body (@{ documentId = $upload.documentId } | ConvertTo-Json)
 ```
 
 ## Health Monitoring
 
-### Checking Service Health
-
 ```powershell
-# Method 1: Using module function
 $status = Get-DoclingSystemStatus
-if ($status.Backend.APIHealthy) {
-    Write-Host "API is healthy" -ForegroundColor Green
-}
-Write-Host "Queue Count: $($status.Backend.QueueCount)"
-Write-Host "Processing: $($status.Backend.ProcessingCount)"
-
-# Method 2: Direct API call
-try {
-    $response = Invoke-WebRequest -Uri "http://localhost:8080/api/health" -UseBasicParsing
-    if ($response.StatusCode -eq 200) {
-        Write-Host "Backend is responding" -ForegroundColor Green
-    }
-} catch {
-    Write-Host "Backend is not responding" -ForegroundColor Red
-}
-```
-
-### Monitoring Document Processing
-
-```powershell
-# Watch queue and processing status
-while ($true) {
-    Clear-Host
-    $status = Get-DoclingSystemStatus
-    Write-Host "=== PSDocling Backend Status ===" -ForegroundColor Cyan
-    Write-Host "API Status: $(if($status.Backend.APIHealthy){'Connected'}else{'Disconnected'})"
-    Write-Host "Queue: $($status.Backend.QueueCount) items"
-    Write-Host "Processing: $($status.Backend.ProcessingCount) items"
-    Write-Host "Completed: $($status.System.TotalDocumentsProcessed) items"
-    Write-Host ""
-    Write-Host "Press Ctrl+C to stop monitoring"
-    Start-Sleep -Seconds 2
-}
+if ($status.Backend.APIHealthy) { Write-Host "API is healthy" -ForegroundColor Green }
+"Queue: $($status.Backend.QueueCount)  Processing: $($status.Backend.ProcessingCount)"
 ```
 
 ## Stopping Services
 
-### Graceful Shutdown
-
 ```powershell
-# Method 1: Using the convenience script
-.\scripts\Stop-All.ps1
-
-# Method 2: Using the module function
-Import-Module PSDocling
-Stop-DoclingSystem              # Stop processes only
-Stop-DoclingSystem -ClearQueue  # Stop and clear queue
+Stop-DoclingSystem              # stop processes, keep queue and history
+Stop-DoclingSystem -ClearQueue  # also clear queue and history
 ```
+
+In the app, **Quit** does the same as `Stop-DoclingSystem`. Closing the window also stops everything. When started with a window, the API also stops itself after 3 minutes without any request from the UI.
 
 ### Cleanup
 
 ```powershell
-# Clear processing queue and status
-Clear-PSDoclingSystem -Force
-
-# Remove temporary files
-Remove-Item "$env:TEMP\docling_*.json" -Force -ErrorAction SilentlyContinue
-Remove-Item "$env:TEMP\DoclingProcessor" -Recurse -Force -ErrorAction SilentlyContinue
+# Clear queue and history (asks before deleting output unless -Force)
+Clear-PSDoclingSystem
 ```
+
+To remove PSDocling and all its data, use **Settings > Uninstall PSDocling** or `Uninstall-PSDocling.ps1` in the module folder.
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Port Already in Use**
+1. **Port already in use**
    ```powershell
-   # Check what's using the port
    netstat -ano | findstr :8080
-
-   # Use different port
-   .\scripts\Start-All.ps1 -ApiPort 9080
+   Start-DoclingSystem -Port 9080 -UseWebView
    ```
 
-2. **Access Denied on Custom Domain**
-   ```powershell
-   # Run as Administrator and add URL ACL
-   netsh http add urlacl url=http://+:8080/ user=Everyone
-   ```
+2. **403 "Missing or invalid token"**: POST requests need `X-PSDocling-Token` from `run\token.txt`; the token changes at every start.
 
-3. **Python Not Found (Simulation Mode)**
+3. **Python not found (simulation mode)**
    ```powershell
-   # Skip Python check for testing
-   .\scripts\Start-All.ps1 -SkipPythonCheck
+   Initialize-DoclingSystem -SkipPythonCheck
    ```
 
 ### Debug Information
-
-Check debug files when troubleshooting:
-- Python errors: `Get-Content "$env:TEMP\docling_error.txt"`
-- Python output: `Get-Content "$env:TEMP\docling_output.txt"`
-- Queue status: `Get-ChildItem "$env:TEMP\DoclingQueue" -Filter "*.queue" | Sort-Object CreationTime`
+- Last failed start: `logs\last-launch-error.txt`
+- API and launcher: `logs\api.log`, `logs\launcher.log`, `logs\window.log`
+- Processor: `logs\processor.log`, `logs\processor-debug.log`, `logs\processor-errors.log`
+- Last Python run: `run\docling_output.txt`, `run\docling_error.txt`
+- Queue: `Get-ChildItem "$env:LOCALAPPDATA\PSDocling\data\queue" -Filter *.queue | Sort-Object CreationTime`

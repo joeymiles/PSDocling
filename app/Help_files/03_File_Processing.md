@@ -57,20 +57,21 @@ Add-DocumentToQueue -Path "C:\Documents\presentation.pptx" -OutputFormat "json"
 ### Method 2: REST API
 
 ```powershell
-# Upload via API
+# Upload via API (POST needs the per-run token from the data folder)
+$token = Get-Content "$env:LOCALAPPDATA\PSDocling\run\token.txt"
+$auth = @{ 'X-PSDocling-Token' = $token }
 $file = Get-Item "C:\Documents\sample.pdf"
-$response = Invoke-RestMethod -Uri "http://localhost:8080/api/upload" `
-    -Method Post `
-    -InFile $file.FullName
+$body = @{ fileName = $file.Name; dataBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($file.FullName)) } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "http://localhost:8080/api/upload" -Method Post -Headers $auth -ContentType 'application/json' -Body $body
+Invoke-RestMethod -Uri "http://localhost:8080/api/start-conversion" -Method Post -Headers $auth -ContentType 'application/json' -Body (@{ documentId = $response.documentId } | ConvertTo-Json)
 
-Write-Host "Document ID: $($response.id)"
-Write-Host "Status: $($response.status)"
+Write-Host "Document ID: $($response.documentId)"
 ```
 
 ### Method 3: Web Interface
 
 ```text
-1. Navigate to http://localhost:8081
+1. Start PSDocling from the desktop shortcut
 2. Drag and drop files onto upload area
    OR
    Click "Choose Files" and browse
@@ -194,7 +195,7 @@ while ($true) {
 
 ```powershell
 # List all processed files
-$processedDir = ".\ProcessedDocuments"
+$processedDir = "$env:LOCALAPPDATA\PSDocling\data\output"
 Get-ChildItem $processedDir -Recurse -File |
     Select-Object Name, Directory, Length, LastWriteTime |
     Format-Table -AutoSize
@@ -212,7 +213,7 @@ Write-Host "Found processed file: $($processed.FullName)"
 ```powershell
 # Copy single processed file
 $documentId = "305d7273-145f-4614-80ef-9933cfec0506" # example ID
-$source = ".\ProcessedDocuments\$documentId\*.md"
+$source = "$env:LOCALAPPDATA\PSDocling\data\output\$documentId\*.md"
 $destination = "C:\Output\"
 
 Copy-Item $source $destination -Force
@@ -220,7 +221,7 @@ Write-Host "Copied to: $destination"
 
 # Copy all processed files from today
 $today = (Get-Date).Date
-$processed = Get-ChildItem ".\ProcessedDocuments" -Recurse -File |
+$processed = Get-ChildItem "$env:LOCALAPPDATA\PSDocling\data\output" -Recurse -File |
     Where-Object { $_.CreationTime.Date -eq $today }
 
 foreach ($file in $processed) {
@@ -249,7 +250,7 @@ Write-Host "Downloaded to: $outputPath"
 
 ```powershell
 # Organize processed files by type
-$processedDir = ".\ProcessedDocuments"
+$processedDir = "$env:LOCALAPPDATA\PSDocling\data\output"
 $organizedDir = "C:\OrganizedOutput"
 
 # Create folders by output type
@@ -454,18 +455,18 @@ Write-Host "All documents processed!" -ForegroundColor Green
 
 1. **Document Stuck in Queue**
    ```powershell
-   # Check if processor is running
-   Get-Process | Where-Object {$_.CommandLine -like "*Start-DocumentProcessor*"}
+   # Check the processor log
+   Get-Content "$env:LOCALAPPDATA\PSDocling\logs\processor.log" -Tail 20
 
-   # Restart processor
-   .\scripts\Stop-All.ps1
-   .\scripts\Start-All.ps1
+   # Restart
+   Stop-DoclingSystem
+   Start-DoclingSystem -UseWebView
    ```
 
 2. **Processing Failed**
    ```powershell
    # Check error logs
-   Get-Content "$env:TEMP\docling_error.txt" -Tail 50
+   Get-Content "$env:LOCALAPPDATA\PSDocling\logs\processor-errors.log" -Tail 50
 
    # Get specific document error
    $status = Get-ProcessingStatus

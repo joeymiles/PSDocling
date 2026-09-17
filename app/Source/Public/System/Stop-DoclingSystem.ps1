@@ -57,12 +57,19 @@ function Stop-DoclingSystem {
     $legacyApi = Join-Path $env:TEMP 'docling_api.ps1'
     $legacyProc = Join-Path $env:TEMP 'docling_processor.ps1'
     $wmiProcesses = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe' OR Name='python.exe' OR Name='pythonw.exe' OR Name='msedge.exe' OR Name='chrome.exe'" -ErrorAction SilentlyContinue
+    # Browsers only when they run PSDocling's private app-window profile,
+    # never a user's own browser that merely mentions the folder.
+    $appProfileArg = '--user-data-dir="' + (Join-Path $runDir 'browser-profile') + '"'
     foreach ($wmiProc in $wmiProcesses) {
         $cmdLine = $wmiProc.CommandLine
         if (-not $cmdLine) { continue }
-        $isOurs = $cmdLine.IndexOf($runDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-                  $cmdLine.IndexOf($legacyApi, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-                  $cmdLine.IndexOf($legacyProc, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        if ($wmiProc.Name -in @('msedge.exe', 'chrome.exe')) {
+            $isOurs = $cmdLine.IndexOf($appProfileArg, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } else {
+            $isOurs = $cmdLine.IndexOf($runDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                      $cmdLine.IndexOf($legacyApi, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                      $cmdLine.IndexOf($legacyProc, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        }
         if ($isOurs) {
             Add-Target ([int]$wmiProc.ProcessId)
         }

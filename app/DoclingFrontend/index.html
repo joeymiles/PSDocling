@@ -492,8 +492,38 @@
     };
     const results = {};
 
+    // First run: offer a desktop shortcut once (declining is remembered).
+    async function offerShortcutOnce() {
+        try {
+            const info = await (await fetch(API + '/api/app-info')).json();
+            if (info.shortcutExists || info.shortcutOffered || !info.launcherAvailable) { return; }
+            const create = await showDialog({
+                title: 'Add a desktop shortcut?',
+                body: 'Start PSDocling from your desktop next time. You can add it later from Settings.',
+                okLabel: 'Add shortcut',
+                cancelLabel: 'Not now'
+            });
+            await createShortcut(create);
+        } catch (e) { /* offer is optional */ }
+    }
+
+    async function createShortcut(create) {
+        const r = await fetch(API + '/api/shortcut', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ create: !!create })
+        });
+        const data = await r.json();
+        if (create) {
+            if (data.success) { showToast('Desktop shortcut added.', 'success'); }
+            else { showToast(data.error || 'Could not create the shortcut.', 'error'); }
+        }
+        return data;
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         setupUpload();
+        setTimeout(offerShortcutOnce, 1200);
 
         // Keyboard support for drop zone
         const zone = document.getElementById('drop-zone');

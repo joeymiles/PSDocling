@@ -122,6 +122,39 @@ function Start-APIServer {
                         $responseContent = @{ success = $true; message = 'PSDocling is shutting down' } | ConvertTo-Json
                     }
 
+                    '^/api/app-info$' {
+                        $shortcutPath = Get-DoclingShortcutPath
+                        $responseContent = @{
+                            version           = $script:DoclingSystem.Version
+                            dataFolder        = Get-DoclingPath Home
+                            shortcutExists    = [bool](Test-Path $shortcutPath)
+                            shortcutOffered   = [bool](Get-DoclingSetting 'ShortcutOffered')
+                            launcherAvailable = [bool](Get-DoclingLauncherPath)
+                        } | ConvertTo-Json
+                    }
+
+                    '^/api/shortcut$' {
+                        # Body: { "create": true } creates it; false records "not now"
+                        $reader = New-Object System.IO.StreamReader($request.InputStream, $request.ContentEncoding)
+                        $body = $reader.ReadToEnd()
+                        $reader.Close()
+                        $wantShortcut = $false
+                        if ($body) { try { $wantShortcut = [bool]($body | ConvertFrom-Json).create } catch { } }
+                        Set-DoclingSetting -Name 'ShortcutOffered' -Value $true
+                        if ($wantShortcut) {
+                            try {
+                                $created = New-DoclingShortcut
+                                $responseContent = @{ success = $true; path = $created } | ConvertTo-Json
+                            } catch {
+                                Write-DoclingLog -Component api -Level ERROR -Message "Shortcut creation failed: $($_.Exception.Message)"
+                                $response.StatusCode = 500
+                                $responseContent = @{ success = $false; error = "Could not create the shortcut: $($_.Exception.Message)" } | ConvertTo-Json
+                            }
+                        } else {
+                            $responseContent = @{ success = $true; declined = $true } | ConvertTo-Json
+                        }
+                    }
+
                     '^/api/health$' {
                         $responseContent = @{
                             status      = 'healthy'

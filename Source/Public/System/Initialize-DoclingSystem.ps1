@@ -68,24 +68,13 @@ function Initialize-DoclingSystem {
         }
     }
 
-    # Prefer module-adjacent frontend (install dir), then repo checkout, then cwd
-    $frontendCandidates = @(
-        (Join-Path $PSScriptRoot 'DoclingFrontend'),
-        (Join-Path (Split-Path $PSScriptRoot -Parent) 'DoclingFrontend'),
-        (Join-Path (Get-Location) 'DoclingFrontend')
-    )
-    $frontendDir = $null
-    foreach ($candidate in $frontendCandidates) {
-        if (Test-Path $candidate) {
-            $frontendDir = $candidate
-            break
-        }
+    # The API serves DoclingFrontend; -GenerateFrontend is kept for
+    # compatibility and now copies the UI to .\DoclingFrontend.
+    if (-not (Get-DoclingFrontendPath)) {
+        Write-Warning "DoclingFrontend not found; the web UI will not load. Reinstall PSDocling."
     }
-    if (-not $frontendDir) {
-        $frontendDir = Join-Path $PSScriptRoot 'DoclingFrontend'
-    }
-    if ($GenerateFrontend -or -not (Test-Path $frontendDir)) {
-        New-FrontendFiles
+    if ($GenerateFrontend) {
+        New-FrontendFiles | Out-Null
     }
 
     Write-Host "System initialized" -ForegroundColor Green

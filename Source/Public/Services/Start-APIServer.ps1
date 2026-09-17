@@ -10,12 +10,45 @@ function Start-APIServer {
     [CmdletBinding()]
     param([int]$Port = 8080)
 
+    # A "localhost" prefix makes http.sys accept loopback connections only.
     $listener = New-Object System.Net.HttpListener
     $listener.Prefixes.Add("http://localhost:$Port/")
+
+    # Per-run write token. The UI gets it injected into index.html (same
+    # origin, no CORS, so other sites cannot read it); local tools read
+    # run\token.txt. Every non-GET request must send X-PSDocling-Token.
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $apiToken = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    $tokenFile = Join-Path (Get-DoclingPath Run -Ensure) 'token.txt'
+    Set-Content -Path $tokenFile -Value $apiToken -Encoding ASCII -NoNewline
+
+    $frontendDir = Get-DoclingFrontendPath
+    $mimeMap = @{
+        '.html' = 'text/html; charset=utf-8'; '.css' = 'text/css; charset=utf-8'
+        '.js'   = 'application/javascript; charset=utf-8'; '.json' = 'application/json; charset=utf-8'
+        '.svg'  = 'image/svg+xml'; '.png' = 'image/png'; '.ico' = 'image/x-icon'
+    }
+
+    function Send-Bytes($Response, [int]$Status, [string]$ContentType, [byte[]]$Body) {
+        $Response.StatusCode = $Status
+        $Response.ContentType = $ContentType
+        $Response.Headers.Add('Cache-Control', 'no-store')
+        $Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+        $Response.ContentLength64 = $Body.Length
+        $Response.OutputStream.Write($Body, 0, $Body.Length)
+        $Response.Close()
+    }
+
+    function Send-Json($Response, [int]$Status, $Object) {
+        $body = [System.Text.Encoding]::UTF8.GetBytes(($Object | ConvertTo-Json -Compress))
+        Send-Bytes $Response $Status 'application/json' $body
+    }
 
     try {
         $listener.Start()
         Write-Host "API Server started on port $Port" -ForegroundColor Green
+        Write-DoclingLog -Component api -Message "API listening on http://localhost:$Port (pid $PID, frontend: $frontendDir)"
 
         while ($listener.IsListening) {
             try {
@@ -23,19 +56,45 @@ function Start-APIServer {
                 $request = $context.Request
                 $response = $context.Response
 
-                # CORS
-                $response.Headers.Add("Access-Control-Allow-Origin", "*")
-                $response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                # Reject DNS-rebinding style requests: Host must be loopback
+                if ($request.Url.Host -notin @('localhost', '127.0.0.1')) {
+                    Send-Json $response 403 @{ error = 'Forbidden host' }
+                    continue
+                }
 
-                if ($request.HttpMethod -eq "OPTIONS") {
-                    $response.StatusCode = 200
-                    $response.Close()
+                $path = $request.Url.LocalPath
+
+                # Writes need the per-run token
+                if ($request.HttpMethod -notin @('GET', 'HEAD')) {
+                    if ($request.Headers['X-PSDocling-Token'] -ne $apiToken) {
+                        Write-DoclingLog -Component api -Level WARN -Message "Rejected $($request.HttpMethod) $path without valid token"
+                        Send-Json $response 403 @{ error = 'Missing or invalid token' }
+                        continue
+                    }
+                }
+
+                # Static UI (same origin as the API)
+                if ($request.HttpMethod -eq 'GET' -and -not $path.StartsWith('/api/')) {
+                    $rel = if ($path -eq '/' -or [string]::IsNullOrEmpty($path)) { 'index.html' } else { $path.TrimStart('/') }
+                    $filePath = if ($frontendDir) { [System.IO.Path]::GetFullPath((Join-Path $frontendDir $rel)) } else { $null }
+                    $rootFull = if ($frontendDir) { [System.IO.Path]::GetFullPath($frontendDir).TrimEnd('\') + '\' } else { $null }
+                    if (-not $filePath -or -not $filePath.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path $filePath -PathType Leaf)) {
+                        Send-Json $response 404 @{ error = 'Not found' }
+                        continue
+                    }
+                    $ext = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
+                    if ($ext -eq '.html') {
+                        $html = [System.IO.File]::ReadAllText($filePath)
+                        $html = $html.Replace('<meta name="psdocling-token" content=""/>', "<meta name=`"psdocling-token`" content=`"$apiToken`"/>")
+                        Send-Bytes $response 200 $mimeMap[$ext] ([System.Text.Encoding]::UTF8.GetBytes($html))
+                    } else {
+                        $type = if ($mimeMap[$ext]) { $mimeMap[$ext] } else { 'application/octet-stream' }
+                        Send-Bytes $response 200 $type ([System.IO.File]::ReadAllBytes($filePath))
+                    }
                     continue
                 }
 
                 $responseContent = ""
-                $path = $request.Url.LocalPath
 
                 switch -Regex ($path) {
                     '^/api/health$' {

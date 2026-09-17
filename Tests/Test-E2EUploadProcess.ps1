@@ -27,6 +27,24 @@ try {
     throw "API not reachable at $api. Start with: .\scripts\Start-All.ps1 -OpenBrowser"
 }
 
+# Security defaults
+$token = (Get-Content (Join-Path (Get-DoclingPath Run) 'token.txt') -Raw).Trim()
+$auth = @{ 'X-PSDocling-Token' = $token }
+Assert-True ($token.Length -eq 64) "Per-run token written to run\token.txt"
+
+$page = Invoke-WebRequest "$api/" -UseBasicParsing -TimeoutSec 5
+Assert-True ($page.Content -match [regex]::Escape("content=`"$token`"")) "UI served same-origin with token injected"
+Assert-True (-not $page.Headers['Access-Control-Allow-Origin']) "No Access-Control-Allow-Origin header"
+
+$noToken = try { Invoke-WebRequest "$api/api/cancel/x" -Method POST -UseBasicParsing -TimeoutSec 5; 200 } catch { [int]$_.Exception.Response.StatusCode }
+Assert-True ($noToken -eq 403) "POST without token rejected (got $noToken)"
+
+$badHost = try { Invoke-WebRequest "$api/api/health" -Headers @{ Host = "evil.example:8080" } -UseBasicParsing -TimeoutSec 5; 200 } catch { [int]$_.Exception.Response.StatusCode }
+Assert-True ($badHost -in @(400, 403)) "Non-loopback Host header rejected (got $badHost)"
+
+$traversal = try { Invoke-WebRequest "$api/..%5C..%5Cdata%5Cstatus.json" -UseBasicParsing -TimeoutSec 5; 200 } catch { [int]$_.Exception.Response.StatusCode }
+Assert-True ($traversal -in @(400, 403, 404)) "Static path traversal rejected (got $traversal)"
+
 # Tiny PDF fixture
 if (-not (Test-Path $pdfPath)) {
     New-Item -ItemType Directory -Path $fixtureDir -Force | Out-Null
@@ -57,7 +75,7 @@ startxref
 
 $bytes = [IO.File]::ReadAllBytes($pdfPath)
 $b64 = [Convert]::ToBase64String($bytes)
-$upload = Invoke-RestMethod -Uri "$api/api/upload" -Method POST -ContentType 'application/json' -Body (@{
+$upload = Invoke-RestMethod -Uri "$api/api/upload" -Method POST -Headers $auth -ContentType 'application/json' -Body (@{
     fileName = 'tiny.pdf'
     dataBase64 = $b64
     exportFormat = 'markdown'
@@ -68,7 +86,7 @@ $docId = $upload.documentId
 $docs = Invoke-RestMethod "$api/api/documents" -TimeoutSec 10
 Assert-True (@($docs).Count -ge 1) "Documents API lists uploaded item"
 
-$start = Invoke-RestMethod -Uri "$api/api/start-conversion" -Method POST -ContentType 'application/json' -Body (@{
+$start = Invoke-RestMethod -Uri "$api/api/start-conversion" -Method POST -Headers $auth -ContentType 'application/json' -Body (@{
     documentId = $docId
     exportFormat = 'markdown'
 } | ConvertTo-Json)

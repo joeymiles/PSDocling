@@ -87,7 +87,7 @@ $statusFn = Get-Content (Join-Path $repoRoot 'Source\Public\System\Get-DoclingSy
 Assert-True ($statusFn -match 'Get-QueueItemsFolder') "Get-DoclingSystemStatus uses folder queue"
 Assert-True ($statusFn -notmatch 'Get-QueueItems(?!Folder)') "Get-DoclingSystemStatus does not use JSON Get-QueueItems"
 
-$frontend = Get-Content (Join-Path $repoRoot 'Source\Public\Services\New-FrontendFiles.ps1') -Raw
+$frontend = Get-Content (Join-Path $repoRoot 'DoclingFrontend\index.html') -Raw
 # Fixed pattern uses JS concat: downloadDocument(\'' + id + '\')
 Assert-True ($frontend -match "downloadDocument\(\\'' \+ id \+ '\\'\)") "Frontend downloadDocument onclick uses proper JS concatenation"
 Assert-True ($frontend -notmatch 'downloadDocument\(\\''" \+ id \+ "\\''\)') "Frontend downloadDocument onclick no longer embeds literal + id +"

@@ -3,6 +3,8 @@
 <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <meta name="psdocling-token" content=""/>
+    <link rel="icon" href="/psdocling.ico"/>
     <title>PSDocling v3.3.2</title>
     <style>
         :root{
@@ -330,7 +332,19 @@
     </div>
 
     <script>
-    const API = 'http://localhost:8080';
+    // The API serves this page, so it is always same origin.
+    const API = window.location.origin;
+    const API_TOKEN = (document.querySelector('meta[name="psdocling-token"]') || {}).content || '';
+    // Attach the per-run write token to every non-GET request.
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = function(url, options) {
+        const opts = Object.assign({}, options || {});
+        const method = (opts.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD') {
+            opts.headers = Object.assign({}, opts.headers || {}, { 'X-PSDocling-Token': API_TOKEN });
+        }
+        return nativeFetch(url, opts);
+    };
     const results = {};
 
     document.addEventListener('DOMContentLoaded', function() {

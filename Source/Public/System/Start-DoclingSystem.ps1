@@ -1,8 +1,16 @@
 <#
 .SYNOPSIS
-    Start-DoclingSystem function from PSDocling module
+    Starts the PSDocling API server, document processor and UI window
 .DESCRIPTION
-    Extracted from monolithic PSDocling.psm1
+    Starts two hidden PowerShell processes (API server, which also serves the
+    web UI, and the document processor), waits for the API to answer, then
+    opens the UI:
+      -UseWebView   native pywebview window (falls back to an Edge/Chrome
+                    --app window when pywebview is not available)
+      -OpenBrowser  a normal browser tab (developer use)
+    Process ids are written to <home>\run\docling_pids.json for Stop-DoclingSystem.
+.PARAMETER Port
+    Port for the API and UI (loopback only). Defaults to the module setting (8080).
 .NOTES
     Part of PSDocling Document Processing System
 #>
@@ -10,118 +18,100 @@ function Start-DoclingSystem {
     [CmdletBinding()]
     param(
         [switch]$OpenBrowser,
-        [switch]$UseWebView
+        [switch]$UseWebView,
+        [int]$Port = 0
     )
+
+    if ($Port -gt 0) {
+        $script:DoclingSystem.APIPort = $Port
+        $script:DoclingSystem.WebPort = $Port
+    }
+    $apiPort = $script:DoclingSystem.APIPort
+    $uiUrl = "http://localhost:$apiPort"
+    $runDir = Get-DoclingPath Run -Ensure
 
     Write-Host "Starting Docling System..." -ForegroundColor Cyan
+    Write-DoclingLog -Component launcher -Message "Starting on $uiUrl (home: $(Get-DoclingPath Home))"
 
-    # Start API server
-    # Pass Python availability status to subprocess
     $pythonAvailable = if ($script:DoclingSystem.PythonAvailable) { '$true' } else { '$false' }
-    $modulePath = $script:DoclingSystem.ModulePath
-    $apiScript = @"
-Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$modulePath' -Force
-Set-PythonAvailable -Available $pythonAvailable
-Start-APIServer -Port $($script:DoclingSystem.APIPort)
-"@
-    $apiPath = Join-Path (Get-DoclingPath Run -Ensure) "docling_api.ps1"
-    $apiScript | Set-Content $apiPath -Encoding UTF8
+    $modulePath = $script:DoclingSystem.ModulePath -replace "'", "''"
 
-    $apiProcess = Start-Process powershell -ArgumentList "-File", $apiPath -PassThru -WindowStyle Hidden
-    Write-Host "API server started on port $($script:DoclingSystem.APIPort)" -ForegroundColor Green
+    # Child scripts log their own crash, since their consoles are hidden.
+    $childTemplate = @'
+$ErrorActionPreference = 'Continue'
+try {
+    Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
+    Import-Module '__MODULE__' -Force -ErrorAction Stop *> $null
+    Set-PythonAvailable -Available __PYTHON__
+    __COMMAND__
+} catch {
+    Write-DoclingLog -Component __COMPONENT__ -Level ERROR -Message ("__COMPONENT__ crashed: " + $_.Exception.Message)
+    throw
+}
+'@
+    $childTemplate = $childTemplate.Replace('__MODULE__', $modulePath).Replace('__PYTHON__', $pythonAvailable)
+    $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File')
 
-    # Start processor
-    # Pass Python availability status to subprocess
-    $procScript = @"
-Remove-Module PSDocling -Force -ErrorAction SilentlyContinue
-Import-Module '$modulePath' -Force
-Set-PythonAvailable -Available $pythonAvailable
-Start-DocumentProcessor
-"@
-    $procPath = Join-Path (Get-DoclingPath Run -Ensure) "docling_processor.ps1"
-    $procScript | Set-Content $procPath -Encoding UTF8
+    $apiPath = Join-Path $runDir 'docling_api.ps1'
+    $childTemplate.Replace('__COMMAND__', "Start-APIServer -Port $apiPort").Replace('__COMPONENT__', 'api') |
+        Set-Content $apiPath -Encoding UTF8
+    $apiProcess = Start-Process powershell -ArgumentList ($childArgs + "`"$apiPath`"") -PassThru -WindowStyle Hidden
+    Write-Host "API server started on port $apiPort" -ForegroundColor Green
 
-    $procProcess = Start-Process powershell -ArgumentList "-File", $procPath -PassThru -WindowStyle Hidden
+    $procPath = Join-Path $runDir 'docling_processor.ps1'
+    $childTemplate.Replace('__COMMAND__', 'Start-DocumentProcessor').Replace('__COMPONENT__', 'processor') |
+        Set-Content $procPath -Encoding UTF8
+    $procProcess = Start-Process powershell -ArgumentList ($childArgs + "`"$procPath`"") -PassThru -WindowStyle Hidden
     Write-Host "Document processor started" -ForegroundColor Green
 
-    # Resolve frontend: installed module dir, repo (sibling of Build/), then cwd
-    $frontendCandidates = @(
-        (Join-Path $PSScriptRoot 'DoclingFrontend'),
-        (Join-Path (Split-Path $PSScriptRoot -Parent) 'DoclingFrontend'),
-        (Join-Path (Get-Location) 'DoclingFrontend')
-    )
-    $frontendDir = $null
-    foreach ($candidate in $frontendCandidates) {
-        if (Test-Path $candidate) {
-            $frontendDir = $candidate
+    # Wait for the API before opening any window
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        if ($apiProcess.HasExited) { break }
+        try {
+            Invoke-RestMethod "$uiUrl/api/health" -TimeoutSec 2 -ErrorAction Stop | Out-Null
+            $ready = $true
             break
+        } catch {
+            Start-Sleep -Milliseconds 500
         }
     }
-    $webPath = if ($frontendDir) { Join-Path $frontendDir 'Start-WebServer.ps1' } else { $null }
-
-    if ($webPath -and (Test-Path $webPath)) {
-        $webProcess = Start-Process powershell -ArgumentList "-File", $webPath, "-Port", $script:DoclingSystem.WebPort -PassThru -WindowStyle Hidden
-        Write-Host "Web server started on port $($script:DoclingSystem.WebPort)" -ForegroundColor Green
-
-        if ($UseWebView) {
-            Start-Sleep 2
-            $pyWebViewScript = $null
-            $searchPaths = @(
-                (Join-Path $PSScriptRoot 'Launch-PyWebView.py'),
-                (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\Launch-PyWebView.py'),
-                (Join-Path (Get-Location) 'scripts\Launch-PyWebView.py'),
-                (Join-Path (Get-Location) 'Launch-PyWebView.py')
-            )
-
-            foreach ($path in $searchPaths) {
-                if ($path -and (Test-Path $path)) {
-                    $pyWebViewScript = (Resolve-Path $path).Path
-                    break
-                }
-            }
-
-            if ($pyWebViewScript) {
-                # Use pythonw.exe to launch without console window (GUI only)
-                $pythonw = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
-                if (-not $pythonw) {
-                    # Fallback to python.exe if pythonw not found
-                    $pythonw = 'python'
-                }
-                $pyProcess = Start-Process $pythonw -ArgumentList $pyWebViewScript, $script:DoclingSystem.APIPort, $script:DoclingSystem.WebPort -PassThru
-                Write-Host "PyWebView window launched" -ForegroundColor Green
-            } else {
-                Write-Warning "PyWebView script not found. Install pywebview with: pip install pywebview requests"
-                Write-Host "Falling back to browser mode" -ForegroundColor Yellow
-                Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
-                Write-Host "Frontend opened in browser: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
-            }
-        } elseif ($OpenBrowser) {
-            Start-Sleep 2
-            Start-Process "http://localhost:$($script:DoclingSystem.WebPort)"
-            Write-Host "Frontend opened in browser: http://localhost:$($script:DoclingSystem.WebPort)" -ForegroundColor Green
-        }
-    } else {
-        Write-Warning "DoclingFrontend not found. Run Initialize-DoclingSystem -GenerateFrontend or install from the repo."
+    if (-not $ready) {
+        $msg = "API did not start on $uiUrl (port in use or startup error). See $(Join-Path (Get-DoclingPath Logs) 'api.log')"
+        Write-DoclingLog -Component launcher -Level ERROR -Message $msg
+        Set-Content -Path (Join-Path (Get-DoclingPath Logs -Ensure) 'last-launch-error.txt') -Value "$(Get-Date -Format s) $msg" -Encoding UTF8
+        Write-Warning $msg
     }
 
-    Write-Host "System running!" -ForegroundColor Green
+    $pyProcess = $null
+    $windowProcess = $null
+    if ($ready -and $UseWebView) {
+        $pyProcess = Start-DoclingWindow -Url $uiUrl -ApiPort $apiPort
+        if (-not $pyProcess) {
+            $windowProcess = Start-DoclingAppWindow -Url $uiUrl
+        }
+    } elseif ($ready -and $OpenBrowser) {
+        Start-Process $uiUrl
+        Write-Host "Frontend opened in browser: $uiUrl" -ForegroundColor Green
+    }
 
-    # Store process IDs for reliable cleanup
-    $pidFile = Join-Path (Get-DoclingPath Run -Ensure) "docling_pids.json"
+    Write-Host "System running at $uiUrl" -ForegroundColor Green
+
     $pids = @{
         API       = $apiProcess.Id
         Processor = $procProcess.Id
-        Web       = if ($webProcess) { $webProcess.Id } else { $null }
         PyWebView = if ($pyProcess) { $pyProcess.Id } else { $null }
+        Port      = $apiPort
         Timestamp = Get-Date
     }
-    $pids | ConvertTo-Json | Set-Content $pidFile -Encoding UTF8
+    $pids | ConvertTo-Json | Set-Content (Join-Path $runDir 'docling_pids.json') -Encoding UTF8
 
     return @{
         API       = $apiProcess
         Processor = $procProcess
-        Web       = $webProcess
-        PyWebView = if ($pyProcess) { $pyProcess } else { $null }
+        PyWebView = $pyProcess
+        AppWindow = $windowProcess
+        Ready     = $ready
+        Url       = $uiUrl
     }
 }

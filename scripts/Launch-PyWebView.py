@@ -113,7 +113,8 @@ def main():
 
     # URLs
     api_url = f"http://localhost:{api_port}"
-    web_url = f"http://localhost:{web_port}"
+    # The API server also serves the UI (same origin)
+    web_url = api_url
 
     # Check if backend is ready
     if not check_backend_ready(api_url):

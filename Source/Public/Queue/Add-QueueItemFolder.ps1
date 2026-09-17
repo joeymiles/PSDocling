@@ -13,7 +13,7 @@ function Add-QueueItemFolder {
         [string]$DocumentId
     )
 
-    $queueFolder = "$env:TEMP\DoclingQueue"
+    $queueFolder = (Get-DoclingPath Queue)
     $localQueueFolder = $queueFolder
     $localDocumentId = $DocumentId
 

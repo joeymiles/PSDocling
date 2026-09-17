@@ -11,6 +11,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $fixtureDir = Join-Path $PSScriptRoot 'fixtures'
 $pdfPath = Join-Path $fixtureDir 'tiny.pdf'
 $api = 'http://localhost:8080'
+# Status file location follows PSDOCLING_HOME, same as the running stack
+. (Join-Path $repoRoot 'Source\Private\Get-DoclingPath.ps1')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
@@ -76,7 +78,7 @@ $deadline = (Get-Date).AddMinutes(6)
 $status = $null
 do {
     Start-Sleep -Seconds 2
-    $all = Get-Content "$env:TEMP\docling_status.json" -Raw | ConvertFrom-Json
+    $all = Get-Content (Get-DoclingPath StatusFile) -Raw | ConvertFrom-Json
     $status = $all.$docId
     if ($null -eq $status) { continue }
     Write-Host "  status=$($status.Status) progress=$($status.Progress)"

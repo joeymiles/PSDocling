@@ -384,11 +384,11 @@ summary = {
 print(json.dumps(summary, ensure_ascii=False))
 "@
 
-        $tempPy = Join-Path $env:TEMP ("docling_optimize_" + ([guid]::NewGuid().ToString("N").Substring(0,8)) + ".py")
+        $tempPy = Join-Path (Get-DoclingPath Run -Ensure) ("docling_optimize_" + ([guid]::NewGuid().ToString("N").Substring(0,8)) + ".py")
         $py | Set-Content -LiteralPath $tempPy -Encoding UTF8
 
         try {
-            $errorFile = Join-Path $env:TEMP "docling_optimize_error.txt"
+            $errorFile = Join-Path (Get-DoclingPath Run -Ensure) "docling_optimize_error.txt"
 
             $pyArgs = @(
                 $tempPy,

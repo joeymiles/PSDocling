@@ -784,7 +784,7 @@ function Start-APIServer {
                         if (Test-Path $docDir) {
                             try {
                                 # Create ZIP file in temp directory
-                                $zipPath = Join-Path $env:TEMP "$docId.zip"
+                                $zipPath = Join-Path (Get-DoclingPath Run -Ensure) "$docId.zip"
 
                                 # Remove existing ZIP if it exists
                                 if (Test-Path $zipPath) {
@@ -828,7 +828,7 @@ function Start-APIServer {
                             try {
                                 # Create timestamp for filename
                                 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                                $zipPath = Join-Path $env:TEMP "PSDocling_Export_$timestamp.zip"
+                                $zipPath = Join-Path (Get-DoclingPath Run -Ensure) "PSDocling_Export_$timestamp.zip"
 
                                 # Remove existing ZIP if it exists
                                 if (Test-Path $zipPath) {

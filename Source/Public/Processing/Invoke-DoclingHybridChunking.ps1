@@ -274,12 +274,12 @@ with out_path.open("w", encoding="utf-8") as f:
 print(json.dumps({"success": True, "chunks_file": str(out_path)}))
 "@
 
-        $tempPy = Join-Path $env:TEMP ("docling_chunk_" + ([guid]::NewGuid().ToString("N").Substring(0,8)) + ".py")
+        $tempPy = Join-Path (Get-DoclingPath Run -Ensure) ("docling_chunk_" + ([guid]::NewGuid().ToString("N").Substring(0,8)) + ".py")
         $py | Set-Content -LiteralPath $tempPy -Encoding UTF8
 
         try {
-            $errorFile = Join-Path $env:TEMP "docling_chunk_error.txt"
-            $outputFileLog = Join-Path $env:TEMP "docling_chunk_output.txt"
+            $errorFile = Join-Path (Get-DoclingPath Run -Ensure) "docling_chunk_error.txt"
+            $outputFileLog = Join-Path (Get-DoclingPath Run -Ensure) "docling_chunk_output.txt"
 
             # Build arguments with defaults for empty values
             # Note: Order must match Python script's sys.argv expectations

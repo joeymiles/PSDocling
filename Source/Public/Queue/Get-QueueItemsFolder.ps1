@@ -7,7 +7,7 @@
     Part of PSDocling Document Processing System
 #>
 function Get-QueueItemsFolder {
-    $queueFolder = "$env:TEMP\DoclingQueue"
+    $queueFolder = (Get-DoclingPath Queue)
 
     # Ensure queue folder exists
     if (-not (Test-Path $queueFolder)) {

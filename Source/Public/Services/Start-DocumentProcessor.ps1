@@ -13,17 +13,25 @@ function Start-DocumentProcessor {
     Write-Host "Document processor started" -ForegroundColor Green
 
     # Add error logging
-    $errorLogFile = "$env:TEMP\docling_processor_errors.log"
-    $debugLogFile = "$env:TEMP\docling_processor_debug.log"
+    $errorLogFile = Join-Path (Get-DoclingPath Logs -Ensure) "processor-errors.log"
+    $debugLogFile = Join-Path (Get-DoclingPath Logs -Ensure) "processor-debug.log"
     "$(Get-Date) - Processor started" | Add-Content $debugLogFile
+    Write-DoclingLog -Component processor -Message "Processor started (pid $PID)"
 
     while ($true) {
         try {
+            # Keep both processor logs capped: rotate to .1 past 2 MB
+            foreach ($logFile in @($debugLogFile, $errorLogFile)) {
+                if ((Test-Path $logFile) -and (Get-Item $logFile).Length -gt 2MB) {
+                    Move-Item $logFile "$logFile.1" -Force -ErrorAction SilentlyContinue
+                }
+            }
+
             # Use folder-based queue - get the next document ID
             $documentId = Get-NextQueueItemFolder
-            "$(Get-Date) - Get-NextQueueItemFolder returned: $(if ($documentId) { "ID: $documentId" } else { 'null' })" | Add-Content $debugLogFile
 
             if ($documentId) {
+                "$(Get-Date) - Claimed queue item: $documentId" | Add-Content $debugLogFile
                 # Fetch the full document details from the status file
                 "$(Get-Date) - Fetching details for document ID: $documentId" | Add-Content $debugLogFile
                 $allStatus = Get-ProcessingStatus
@@ -463,7 +471,7 @@ except Exception as e:
     sys.exit(1)
 "@
 
-                        $tempPy = Join-Path $env:TEMP "docling_$([guid]::NewGuid().ToString('N')[0..7] -join '').py"
+                        $tempPy = Join-Path (Get-DoclingPath Run -Ensure) "docling_$([guid]::NewGuid().ToString('N')[0..7] -join '').py"
                         $pyScript | Set-Content $tempPy -Encoding UTF8
 
                         try {
@@ -476,7 +484,7 @@ except Exception as e:
                             $enrichPictureClasses = if ($itemEnrichPictureClasses) { 'true' } else { 'false' }
                             $enrichPictureDescription = if ($itemEnrichPictureDescription) { 'true' } else { 'false' }
                             $arguments = "`"$tempPy`" `"$($itemFilePath)`" `"$outputFile`" `"$exportFormat`" `"$embedImages`" `"$enrichCode`" `"$enrichFormula`" `"$enrichPictureClasses`" `"$enrichPictureDescription`""
-                            $process = Start-Process python -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput "$env:TEMP\docling_output.txt" -RedirectStandardError "$env:TEMP\docling_error.txt"
+                            $process = Start-Process python -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path (Get-DoclingPath Run) "docling_output.txt") -RedirectStandardError (Join-Path (Get-DoclingPath Run) "docling_error.txt")
 
                             # Monitor process with progress updates
                             $startTime = Get-Date
@@ -538,9 +546,9 @@ except Exception as e:
                                 }
 
                                 # Check for early Python completion/failure by examining output files
-                                $outputFileExists = Test-Path "$env:TEMP\docling_output.txt" -ErrorAction SilentlyContinue
+                                $outputFileExists = Test-Path (Join-Path (Get-DoclingPath Run) "docling_output.txt") -ErrorAction SilentlyContinue
                                 if ($outputFileExists) {
-                                    $stdout = Get-Content "$env:TEMP\docling_output.txt" -Raw -ErrorAction SilentlyContinue
+                                    $stdout = Get-Content (Join-Path (Get-DoclingPath Run) "docling_output.txt") -Raw -ErrorAction SilentlyContinue
                                     if ($stdout) {
                                         try {
                                             $jsonResult = $stdout | ConvertFrom-Json
@@ -630,8 +638,8 @@ except Exception as e:
                                 }
 
                                 # Read output files after process completion
-                                $stdout = Get-Content "$env:TEMP\docling_output.txt" -Raw -ErrorAction SilentlyContinue
-                                $stderr = Get-Content "$env:TEMP\docling_error.txt" -Raw -ErrorAction SilentlyContinue
+                                $stdout = Get-Content (Join-Path (Get-DoclingPath Run) "docling_output.txt") -Raw -ErrorAction SilentlyContinue
+                                $stderr = Get-Content (Join-Path (Get-DoclingPath Run) "docling_error.txt") -Raw -ErrorAction SilentlyContinue
 
                                 # Check for success in Python output
                                 $pythonSuccess = $false
@@ -680,8 +688,8 @@ except Exception as e:
                             }
 
                             # Clean up temp files
-                            Remove-Item "$env:TEMP\docling_output.txt" -Force -ErrorAction SilentlyContinue
-                            Remove-Item "$env:TEMP\docling_error.txt" -Force -ErrorAction SilentlyContinue
+                            Remove-Item (Join-Path (Get-DoclingPath Run) "docling_output.txt") -Force -ErrorAction SilentlyContinue
+                            Remove-Item (Join-Path (Get-DoclingPath Run) "docling_error.txt") -Force -ErrorAction SilentlyContinue
 
                         }
                         finally {
@@ -856,8 +864,8 @@ except Exception as e:
                 # Try to get stderr if it exists
                 $stderr = ""
                 try {
-                    if (Test-Path "$env:TEMP\docling_error.txt") {
-                        $stderr = Get-Content "$env:TEMP\docling_error.txt" -Raw -ErrorAction SilentlyContinue
+                    if (Test-Path (Join-Path (Get-DoclingPath Run) "docling_error.txt")) {
+                        $stderr = Get-Content (Join-Path (Get-DoclingPath Run) "docling_error.txt") -Raw -ErrorAction SilentlyContinue
                     }
                 }
                 catch { }

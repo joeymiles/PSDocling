@@ -25,7 +25,7 @@ Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-APIServer -Port $($script:DoclingSystem.APIPort)
 "@
-    $apiPath = Join-Path $env:TEMP "docling_api.ps1"
+    $apiPath = Join-Path (Get-DoclingPath Run -Ensure) "docling_api.ps1"
     $apiScript | Set-Content $apiPath -Encoding UTF8
 
     $apiProcess = Start-Process powershell -ArgumentList "-File", $apiPath -PassThru -WindowStyle Hidden
@@ -39,7 +39,7 @@ Import-Module '$modulePath' -Force
 Set-PythonAvailable -Available $pythonAvailable
 Start-DocumentProcessor
 "@
-    $procPath = Join-Path $env:TEMP "docling_processor.ps1"
+    $procPath = Join-Path (Get-DoclingPath Run -Ensure) "docling_processor.ps1"
     $procScript | Set-Content $procPath -Encoding UTF8
 
     $procProcess = Start-Process powershell -ArgumentList "-File", $procPath -PassThru -WindowStyle Hidden
@@ -108,7 +108,7 @@ Start-DocumentProcessor
     Write-Host "System running!" -ForegroundColor Green
 
     # Store process IDs for reliable cleanup
-    $pidFile = Join-Path $env:TEMP "docling_pids.json"
+    $pidFile = Join-Path (Get-DoclingPath Run -Ensure) "docling_pids.json"
     $pids = @{
         API       = $apiProcess.Id
         Processor = $procProcess.Id

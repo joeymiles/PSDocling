@@ -27,7 +27,8 @@ function Stop-DoclingSystem {
     $doclingProcesses = @()
 
     # Method 1: Check PIDs from stored file (most reliable)
-    $pidFile = "$env:TEMP\docling_pids.json"
+    $runDir = Get-DoclingPath Run
+    $pidFile = Join-Path $runDir "docling_pids.json"
     if (Test-Path $pidFile) {
         try {
             $storedPids = Get-Content $pidFile | ConvertFrom-Json
@@ -85,12 +86,10 @@ function Stop-DoclingSystem {
 
     # Clean up temp files
     $tempFiles = @(
-        "$env:TEMP\docling_api.ps1",
-        "$env:TEMP\docling_processor.ps1",
-        "$env:TEMP\docling_output.txt",
-        "$env:TEMP\docling_error.txt",
-        "$env:TEMP\docling_processor_debug.txt",
-        "$env:TEMP\docling_processor_errors.log"
+        (Join-Path $runDir "docling_api.ps1"),
+        (Join-Path $runDir "docling_processor.ps1"),
+        (Join-Path $runDir "docling_output.txt"),
+        (Join-Path $runDir "docling_error.txt")
     )
 
     $tempFiles | ForEach-Object {

@@ -8,7 +8,7 @@
     Part of PSDocling Document Processing System
 #>
 function Get-NextQueueItemFolder {
-    $queueFolder = "$env:TEMP\DoclingQueue"
+    $queueFolder = (Get-DoclingPath Queue)
     $localQueueFolder = $queueFolder
 
     $result = Use-FileMutex -Name "queuefolder" -Script {

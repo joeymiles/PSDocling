@@ -29,22 +29,18 @@ if (-not (Test-Path (Join-Path $repoRoot 'Source'))) {
 
 # --- Load minimal functions needed for queue tests ---
 . (Join-Path $repoRoot 'Source\Private\Use-FileMutex.ps1')
+. (Join-Path $repoRoot 'Source\Private\Get-DoclingPath.ps1')
 . (Join-Path $repoRoot 'Source\Public\Queue\Add-QueueItemFolder.ps1')
 . (Join-Path $repoRoot 'Source\Public\Queue\Get-NextQueueItemFolder.ps1')
 . (Join-Path $repoRoot 'Source\Public\Queue\Get-QueueItemsFolder.ps1')
 
-# Isolate queue folder for this test run
-$testQueue = Join-Path $env:TEMP ("DoclingQueue_Test_" + [guid]::NewGuid().ToString('N'))
-$env:TEMP_BACKUP_FOR_TEST = $env:TEMP
-
-# Monkey-patch by temporarily pointing TEMP so queue functions use our folder.
-# The functions hardcode "$env:TEMP\DoclingQueue" - use a unique subfolder by
-# setting TEMP to our test parent so DoclingQueue lands under it.
+# Isolate all runtime paths for this test run via PSDOCLING_HOME
 $isolatedTemp = Join-Path $env:TEMP ("PSDoclingAudit_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $isolatedTemp -Force | Out-Null
-$originalTemp = $env:TEMP
-$env:TEMP = $isolatedTemp
-$queueDir = Join-Path $env:TEMP 'DoclingQueue'
+$originalHome = $env:PSDOCLING_HOME
+$env:PSDOCLING_HOME = $isolatedTemp
+$queueDir = Get-DoclingPath Queue
+Assert-True ($queueDir.StartsWith($isolatedTemp)) "Queue folder follows PSDOCLING_HOME ($queueDir)"
 
 try {
     # Test: add then get returns same id (FIFO)
@@ -76,7 +72,7 @@ try {
     Assert-True ($filesLeft.Count -eq 0) "Claim deletes queue file (no leftover .queue)"
 }
 finally {
-    $env:TEMP = $originalTemp
+    $env:PSDOCLING_HOME = $originalHome
     if (Test-Path $isolatedTemp) {
         Remove-Item $isolatedTemp -Recurse -Force -ErrorAction SilentlyContinue
     }

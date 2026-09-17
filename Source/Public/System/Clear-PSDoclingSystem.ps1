@@ -25,7 +25,7 @@ Function Clear-PSDoclingSystem {
     }
 
     # Clear the queue folder (new folder-based queue)
-    $queueFolder = "$env:TEMP\DoclingQueue"
+    $queueFolder = (Get-DoclingPath Queue)
     if (Test-Path $queueFolder) {
         $queueCount = @(Get-ChildItem $queueFolder -Filter "*.queue" -ErrorAction SilentlyContinue).Count
         if ($queueCount -gt 0) {
@@ -41,14 +41,14 @@ Function Clear-PSDoclingSystem {
     }
 
     # Clear the old JSON queue file (for backwards compatibility)
-    $queueFile = "$env:TEMP\docling_queue.json"
+    $queueFile = (Get-DoclingPath QueueFile)
     if (Test-Path $queueFile) {
         "[]" | Set-Content $queueFile -Encoding UTF8
         Write-Host "Cleared old queue file" -ForegroundColor Green
     }
 
     # Clear the status file
-    $statusFile = "$env:TEMP\docling_status.json"
+    $statusFile = (Get-DoclingPath StatusFile)
     if (Test-Path $statusFile) {
         "{}" | Set-Content $statusFile -Encoding UTF8
         Write-Host "Cleared status file" -ForegroundColor Green
@@ -62,7 +62,7 @@ Function Clear-PSDoclingSystem {
     if ($script:DoclingSystem -and $script:DoclingSystem.OutputDirectory) {
         $processedDirs += $script:DoclingSystem.OutputDirectory
     }
-    $processedDirs += @(".\ProcessedDocuments", "$env:TEMP\DoclingOutput")
+    $processedDirs += @((Get-DoclingPath Output))
     $processedDirs = $processedDirs | Where-Object { $_ } | Select-Object -Unique
     foreach ($processedDir in $processedDirs) {
         if (Test-Path $processedDir) {
@@ -83,7 +83,7 @@ Function Clear-PSDoclingSystem {
     }
 
     # Optional: Clear temp processing directory
-    $tempDir = "$env:TEMP\DoclingProcessor"
+    $tempDir = (Get-DoclingPath Uploads)
     if (Test-Path $tempDir) {
         $tempCount = @(Get-ChildItem $tempDir -Directory -ErrorAction SilentlyContinue).Count
         if ($tempCount -gt 0) {
@@ -101,6 +101,6 @@ Function Clear-PSDoclingSystem {
     }
 
     Write-Host "`nSystem cleared!" -ForegroundColor Green
-    Write-Host "You can now restart the system with: .\scripts\Start-All.ps1" -ForegroundColor Cyan
+    Write-Host "You can now restart PSDocling." -ForegroundColor Cyan
 }
 

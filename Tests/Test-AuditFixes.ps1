@@ -92,6 +92,11 @@ $frontend = Get-Content (Join-Path $repoRoot 'DoclingFrontend\index.html') -Raw
 Assert-True ($frontend -match "downloadDocument\(\\'' \+ id \+ '\\'\)") "Frontend downloadDocument onclick uses proper JS concatenation"
 Assert-True ($frontend -notmatch 'downloadDocument\(\\''" \+ id \+ "\\''\)') "Frontend downloadDocument onclick no longer embeds literal + id +"
 
+# --- Desktop app standard (#44) ---
+Assert-True ($frontend -notmatch '\b(alert|confirm|prompt)\s*\(') "Frontend uses custom dialogs, no alert/confirm/prompt"
+Assert-True ($frontend -match 'X-PSDocling-Token') "Frontend sends the write token"
+Assert-True ($apiServer -notmatch 'Access-Control-Allow-Origin') "API sends no CORS allow-origin header"
+
 Write-Host ""
 Write-Host "Results: $passed passed, $failed failed"
 if ($failed -gt 0) { exit 1 } else { exit 0 }

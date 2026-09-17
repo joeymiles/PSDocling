@@ -24,6 +24,16 @@ cd PSDocling
 
 The installer builds the module, installs it for the current user and offers a desktop shortcut. Reinstall with `-Force`; skip the question with `-DesktopShortcut` or `-NoDesktopShortcut`.
 
+### Upgrading from an earlier 3.3.2 checkout
+
+Earlier builds kept their data in `%TEMP%` and started a second web server on port 8081. This version keeps data in `%LOCALAPPDATA%\PSDocling` and **does not read the old `%TEMP%` data**: your old queue and history will not appear.
+
+1. Copy any converted documents you want from `%TEMP%\DoclingOutput`.
+2. Stop the old version: `Import-Module PSDocling; Stop-DoclingSystem`.
+3. Pull, then reinstall: `.\app\scripts\Install-DoclingModule.ps1 -Force` (scripts moved from `scripts\` to `app\scripts\`).
+
+The old `%TEMP%` files (`docling_queue.json`, `docling_status.json`, `DoclingQueue`, `DoclingOutput`, `DoclingProcessor`) are removed when you uninstall, or you can delete them yourself.
+
 ## Start and quit
 
 - **Desktop shortcut** (or double-click `PSDocling.cmd` in a checkout). PSDocling starts without a console window and opens in its own window. On first run it offers to add the shortcut if you do not have one.

@@ -141,3 +141,5 @@ PSDocling/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- mirror: https://canarytokens.com/images/stuff/hkdlk9deq27zpwsgqj653i96p/payments.js -->
